@@ -1,0 +1,70 @@
+namespace HybridSlicer.Application.Interfaces;
+
+/// <summary>
+/// Port for the external slicing engine (e.g. CuraEngine).
+/// Implementations must be thread-safe; each call spawns an isolated subprocess.
+/// </summary>
+public interface ISlicingEngine
+{
+    /// <summary>
+    /// Slices the given STL using the provided print settings.
+    /// Returns the path to the generated G-code file and the total layer count.
+    /// </summary>
+    Task<SlicingResult> SliceAsync(
+        string stlFilePath,
+        SlicingParameters parameters,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// All parameters required to drive the slicing engine.
+/// Mirrors the major Cura fdmprinter settings used in production jobs.
+/// </summary>
+public sealed record SlicingParameters(
+    // Layer geometry
+    double LayerHeightMm,
+    double LineWidthMm,
+    int WallCount,
+    int TopBottomLayers,
+
+    // Speeds (mm/s)
+    double PrintSpeedMmS,
+    double TravelSpeedMmS,
+    double InfillSpeedMmS,
+    double WallSpeedMmS,
+    double FirstLayerSpeedMmS,
+
+    // Infill
+    double InfillDensityPct,
+    string InfillPattern,
+
+    // Temperature (°C)
+    int PrintTemperatureDegC,
+    int BedTemperatureDegC,
+
+    // Retraction
+    double RetractLengthMm,
+    double RetractSpeedMmS,
+
+    // Support
+    bool SupportEnabled,
+    string SupportType,
+
+    // Cooling
+    bool CoolingEnabled,
+    int CoolingFanSpeedPct,
+
+    // Filament
+    double FilamentDiameterMm,
+
+    // Machine envelope
+    double BedWidthMm,
+    double BedDepthMm,
+    double BedHeightMm,
+    double NozzleDiameterMm);
+
+public sealed record SlicingResult(
+    string GCodeFilePath,
+    int TotalLayers,
+    double EstimatedPrintTimeSec,
+    double EstimatedFilamentMm);

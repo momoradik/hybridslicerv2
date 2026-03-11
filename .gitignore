@@ -1,0 +1,50 @@
+# ── .NET ─────────────────────────────────────────────────────────────────────
+obj/
+bin/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+*.nupkg
+*.snupkg
+project.lock.json
+artifacts/
+logs/
+*.db
+*.db-shm
+*.db-wal
+
+# User secrets
+**/Properties/launchSettings.json
+
+# ── Node / Web ────────────────────────────────────────────────────────────────
+node_modules/
+dist/
+web/src/HybridSlicer.Api/wwwroot/
+
+# Vite cache
+.vite/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+*.iml
+.vscode/settings.json
+
+# ── HybridSlicer runtime data ─────────────────────────────────────────────────
+# (storage root is configured per-machine; these are defaults)
+AppData/
+jobs/
+cura_config.json
+*.gcode
+
+# Secrets / env
+.env
+.env.local
+appsettings.Production.json
+secrets.json

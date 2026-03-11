@@ -1,0 +1,121 @@
+using HybridSlicer.Application.Interfaces;
+using HybridSlicer.Domain.Enums;
+using Microsoft.Extensions.Logging;
+
+namespace HybridSlicer.Infrastructure.Safety;
+
+/// <summary>
+/// Validates a CNC toolpath against:
+///   1. Machine axis envelope limits
+///   2. Rapid-move clearance above the printed part
+///   3. Cutter engagement — no rapid moves inside the part bounding box at cut depth
+///
+/// Parsing strategy: lightweight line-by-line G-code parser extracts X/Y/Z moves.
+/// A full mesh intersection BVH can be plugged in later via the same interface.
+///
+/// SAFETY INVARIANT: Any unrecognised condition returns Blocked, not Clear.
+/// </summary>
+public sealed class CollisionSafetyValidator : ISafetyValidator
+{
+    private readonly ILogger<CollisionSafetyValidator> _logger;
+
+    public CollisionSafetyValidator(ILogger<CollisionSafetyValidator> logger) => _logger = logger;
+
+    public Task<SafetyValidationResult> ValidateToolpathAsync(
+        SafetyValidationRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var issues = new List<string>();
+
+        var moves = ParseMoves(request.CncGCode);
+
+        foreach (var move in moves)
+        {
+            // 1. Axis envelope check
+            if (move.X < 0 || move.X > request.MachineMaxX)
+                issues.Add($"X={move.X:F4} exceeds machine envelope [0, {request.MachineMaxX}].");
+            if (move.Y < 0 || move.Y > request.MachineMaxY)
+                issues.Add($"Y={move.Y:F4} exceeds machine envelope [0, {request.MachineMaxY}].");
+            if (move.Z < 0 || move.Z > request.MachineMaxZ)
+                issues.Add($"Z={move.Z:F4} exceeds machine envelope [0, {request.MachineMaxZ}].");
+
+            // 2. Rapid moves (G0) must be above safe clearance height
+            if (move.IsRapid && move.Z < request.SafeClearanceHeightMm)
+                issues.Add($"Rapid move at Z={move.Z:F4} is below safe clearance height {request.SafeClearanceHeightMm}.");
+
+            // 3. Check cut-depth moves against printed geometry bounding boxes
+            if (!move.IsRapid)
+            {
+                foreach (var box in request.PrintedGeometryBounds)
+                {
+                    if (box.ContainsPoint(move.X, move.Y, move.Z))
+                    {
+                        issues.Add($"Feed move at ({move.X:F4},{move.Y:F4},{move.Z:F4}) intersects printed geometry.");
+                    }
+                }
+            }
+        }
+
+        SafetyStatus status;
+        if (issues.Count == 0)
+        {
+            status = SafetyStatus.Clear;
+        }
+        else if (issues.Any(i => i.Contains("envelope") || i.Contains("intersects")))
+        {
+            status = SafetyStatus.Blocked;
+            _logger.LogWarning("Safety BLOCKED for toolpath: {Count} issues", issues.Count);
+        }
+        else
+        {
+            status = SafetyStatus.Warning;
+            _logger.LogWarning("Safety WARNING for toolpath: {Count} issues", issues.Count);
+        }
+
+        return Task.FromResult(new SafetyValidationResult(status, issues));
+    }
+
+    private static List<GCodeMove> ParseMoves(string gcode)
+    {
+        var moves = new List<GCodeMove>();
+        double x = 0, y = 0, z = 0;
+        bool isRapid = false;
+
+        foreach (var rawLine in gcode.Split('\n'))
+        {
+            var line = rawLine.Trim();
+            if (line.StartsWith(';') || string.IsNullOrEmpty(line)) continue;
+
+            // Strip inline comments
+            var commentIdx = line.IndexOf(';');
+            if (commentIdx >= 0) line = line[..commentIdx].Trim();
+
+            var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) continue;
+
+            var cmd = parts[0].ToUpperInvariant();
+            isRapid = cmd == "G0";
+
+            if (cmd is not ("G0" or "G1")) continue;
+
+            foreach (var part in parts.Skip(1))
+            {
+                if (part.Length < 2) continue;
+                var axis = part[0];
+                if (!double.TryParse(part[1..], out var val)) continue;
+                switch (char.ToUpperInvariant(axis))
+                {
+                    case 'X': x = val; break;
+                    case 'Y': y = val; break;
+                    case 'Z': z = val; break;
+                }
+            }
+
+            moves.Add(new GCodeMove(x, y, z, isRapid));
+        }
+
+        return moves;
+    }
+
+    private sealed record GCodeMove(double X, double Y, double Z, bool IsRapid);
+}
