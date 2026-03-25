@@ -54,7 +54,7 @@ public sealed class JobsController : ControllerBase
     }
 
     [HttpPost]
-    public async Task<IActionResult> Create([FromBody] CreateJobRequest request, CancellationToken ct)
+    public IActionResult Create([FromBody] CreateJobRequest request, CancellationToken ct)
     {
         // Convenience endpoint: creates a job record before STL upload
         // In full implementation this creates a Draft job and returns ID for upload
