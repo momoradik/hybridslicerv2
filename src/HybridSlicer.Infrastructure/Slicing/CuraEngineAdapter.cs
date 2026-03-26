@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.Json;
 using HybridSlicer.Application.Interfaces;
 using HybridSlicer.Domain.Exceptions;
 using Microsoft.Extensions.Logging;
@@ -13,10 +12,11 @@ namespace HybridSlicer.Infrastructure.Slicing;
 /// Wraps the CuraEngine CLI binary (5.x) to slice STL files.
 ///
 /// Invocation (CuraEngine 5.x):
-///   CuraEngine slice -v -p -j fdmprinter.def.json -r settings.json -l model.stl -o output.gcode
+///   CuraEngine slice -v -p -j fdmprinter.def.json -s key=value ... -e0 -j fdmextruder.def.json -s key=value ... -l model.stl -o output.gcode
 ///
-/// -j loads the base printer definition (provides all default setting values).
-/// -r loads our resolved-settings override JSON (flat key→value pairs as strings).
+/// NOTE: The -r (resolved-settings JSON) flag is broken in CuraEngine 5.10.x (causes
+/// integer divide-by-zero in GcodeWriter). Use individual -s key=value flags instead.
+/// CuraEngine 5.12.0+ is required; 5.10.x crashes during G-code export.
 /// </summary>
 public sealed class CuraEngineAdapter : ISlicingEngine
 {
@@ -44,15 +44,11 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         if (!File.Exists(stlFilePath))
             throw new SlicingException($"STL file not found: {stlFilePath}");
 
-        var workDir    = Path.GetDirectoryName(stlFilePath)!;
-        var settingsPath = Path.Combine(workDir, "cura_settings.json");
-        var gcodePath  = Path.Combine(workDir, "print.gcode");
+        var workDir   = Path.GetDirectoryName(stlFilePath)!;
+        var gcodePath = Path.Combine(workDir, "print.gcode");
 
-        // Write resolved-settings JSON (flat string values for CuraEngine -r flag)
-        await WriteResolvedSettingsAsync(settingsPath, p, cancellationToken);
-
-        // Build args: -j base definition + -r our settings
-        var args = BuildArgs(exePath, _opts.DefinitionsPath, settingsPath, stlFilePath, gcodePath);
+        // Build args: -j base definition + individual -s flags + -e0 extruder + -l model -o gcode
+        var args = BuildArgs(_opts.DefinitionsPath, _opts.ExtruderDefinitionsPath, p, stlFilePath, gcodePath);
         _logger.LogInformation("CuraEngine: {Exe} {Args}", exePath, args);
 
         var stdout = new StringBuilder();
@@ -115,10 +111,15 @@ public sealed class CuraEngineAdapter : ISlicingEngine
 
     // ── Private ────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Builds the CuraEngine slice command arguments using individual -s key=value flags.
+    /// The -r flag is intentionally avoided: CuraEngine 5.10.x crashes (integer divide-by-zero
+    /// in GcodeWriter) when -r is used. Individual -s flags work correctly in 5.12.0+.
+    /// </summary>
     private static string BuildArgs(
-        string exePath,
         string? definitionsPath,
-        string settingsPath,
+        string? extruderDefinitionsPath,
+        SlicingParameters p,
         string stlPath,
         string gcodePath)
     {
@@ -127,76 +128,52 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         // Load base fdmprinter definition so CuraEngine knows all setting defaults
         if (!string.IsNullOrWhiteSpace(definitionsPath) && File.Exists(definitionsPath))
             sb.Append($" -j \"{definitionsPath}\"");
-        else
-            _WarnNoDefinitions(exePath, definitionsPath);
 
-        // Load our resolved settings (flat key=string-value JSON)
-        sb.Append($" -r \"{settingsPath}\"");
+        // Global (machine-level) settings
+        sb.Append($" -s layer_height={p.LayerHeightMm.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s layer_height_0={p.LayerHeightMm.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s line_width={p.LineWidthMm.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s wall_line_count={p.WallCount}");
+        sb.Append($" -s top_layers={p.TopBottomLayers}");
+        sb.Append($" -s bottom_layers={p.TopBottomLayers}");
+        sb.Append($" -s speed_print={p.PrintSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s speed_travel={p.TravelSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s speed_infill={p.InfillSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s speed_wall={p.WallSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s speed_layer_0={p.FirstLayerSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s infill_sparse_density={p.InfillDensityPct.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s infill_pattern={p.InfillPattern}");
+        sb.Append($" -s material_print_temperature={p.PrintTemperatureDegC}");
+        sb.Append($" -s material_bed_temperature={p.BedTemperatureDegC}");
+        sb.Append($" -s support_enable={p.SupportEnabled.ToString().ToLowerInvariant()}");
+        sb.Append($" -s support_type={p.SupportType}");
+        sb.Append($" -s cool_fan_enabled={p.CoolingEnabled.ToString().ToLowerInvariant()}");
+        sb.Append($" -s cool_fan_speed={p.CoolingFanSpeedPct.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s machine_width={p.BedWidthMm.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s machine_depth={p.BedDepthMm.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s machine_height={p.BedHeightMm.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s machine_nozzle_size={p.NozzleDiameterMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append(" -s adhesion_type=none");
 
-        // Input model and output G-code
-        sb.Append($" -l \"{stlPath}\"");
-        sb.Append($" -o \"{gcodePath}\"");
+        // Extruder-0 settings (required in CuraEngine 5.x to avoid "no value given" errors)
+        sb.Append(" -e0");
+        if (!string.IsNullOrWhiteSpace(extruderDefinitionsPath) && File.Exists(extruderDefinitionsPath))
+            sb.Append($" -j \"{extruderDefinitionsPath}\"");
+        sb.Append($" -s material_diameter={p.FilamentDiameterMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s machine_nozzle_size={p.NozzleDiameterMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s retraction_amount={p.RetractLengthMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s retraction_speed={p.RetractSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        // Required in CuraEngine 5.x — these settings have no default value in fdmextruder.def.json
+        // without being explicitly set, causing "Trying to retrieve setting with no value given" errors.
+        sb.Append(" -s roofing_layer_count=0");
+        sb.Append(" -s flooring_layer_count=0");
+
+        // Input model and output G-code — use filenames only because
+        // WorkingDirectory is already set to the job's folder.
+        sb.Append($" -l \"{Path.GetFileName(stlPath)}\"");
+        sb.Append($" -o \"{Path.GetFileName(gcodePath)}\"");
 
         return sb.ToString();
-    }
-
-    // Static helper to log a warning without needing an ILogger instance in a static method.
-    // We use a thread-local trick; in practice this warning is only emitted once on startup.
-    private static void _WarnNoDefinitions(string exePath, string? configuredPath)
-    {
-        // Logged at runtime via the adapter's ILogger — this path is hit only when
-        // DefinitionsPath is unconfigured. The slice will still be attempted without
-        // the base definition (may fail on CuraEngine 5.x).
-        Console.Error.WriteLine(
-            $"[CuraEngine] WARNING: DefinitionsPath not set or file not found " +
-            $"(configured='{configuredPath}'). " +
-            "CuraEngine 5.x requires the base fdmprinter.def.json. " +
-            "Set CuraEngine:DefinitionsPath in appsettings.json.");
-    }
-
-    /// <summary>
-    /// Writes a flat "resolved settings" JSON for the CuraEngine -r flag.
-    /// All values are serialized as strings (CuraEngine expects string values in -r files).
-    /// </summary>
-    private static async Task WriteResolvedSettingsAsync(
-        string path,
-        SlicingParameters p,
-        CancellationToken ct)
-    {
-        // CuraEngine -r format: flat dictionary, all values as JSON strings
-        var settings = new Dictionary<string, string>
-        {
-            ["layer_height"]               = p.LayerHeightMm.ToString("F4"),
-            ["layer_height_0"]             = p.LayerHeightMm.ToString("F4"),
-            ["line_width"]                 = p.LineWidthMm.ToString("F4"),
-            ["wall_line_count"]            = p.WallCount.ToString(),
-            ["top_layers"]                 = p.TopBottomLayers.ToString(),
-            ["bottom_layers"]              = p.TopBottomLayers.ToString(),
-            ["speed_print"]                = p.PrintSpeedMmS.ToString("F1"),
-            ["speed_travel"]               = p.TravelSpeedMmS.ToString("F1"),
-            ["speed_infill"]               = p.InfillSpeedMmS.ToString("F1"),
-            ["speed_wall"]                 = p.WallSpeedMmS.ToString("F1"),
-            ["speed_layer_0"]              = p.FirstLayerSpeedMmS.ToString("F1"),
-            ["infill_sparse_density"]      = p.InfillDensityPct.ToString("F1"),
-            ["infill_pattern"]             = p.InfillPattern,
-            ["material_print_temperature"] = p.PrintTemperatureDegC.ToString("F1"),
-            ["material_bed_temperature"]   = p.BedTemperatureDegC.ToString("F1"),
-            ["retraction_amount"]          = p.RetractLengthMm.ToString("F2"),
-            ["retraction_speed"]           = p.RetractSpeedMmS.ToString("F1"),
-            ["support_enable"]             = p.SupportEnabled ? "true" : "false",
-            ["support_type"]               = p.SupportType,
-            ["cool_fan_enabled"]           = p.CoolingEnabled ? "true" : "false",
-            ["cool_fan_speed"]             = p.CoolingFanSpeedPct.ToString("F1"),
-            ["material_diameter"]          = p.FilamentDiameterMm.ToString("F2"),
-            ["machine_width"]              = p.BedWidthMm.ToString("F1"),
-            ["machine_depth"]              = p.BedDepthMm.ToString("F1"),
-            ["machine_height"]             = p.BedHeightMm.ToString("F1"),
-            ["machine_nozzle_size"]        = p.NozzleDiameterMm.ToString("F2"),
-            ["adhesion_type"]              = "none",
-        };
-
-        var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
-        await File.WriteAllTextAsync(path, json, ct);
     }
 
     private static (int layers, double timeSec, double filamentMm) ParseSummary(string output)
@@ -288,10 +265,15 @@ public sealed class CuraEngineOptions
 
     /// <summary>
     /// Path to the base fdmprinter.def.json required by CuraEngine 5.x.
-    /// Example: C:\Program Files\UltiMaker Cura 5.10.1\share\cura\resources\definitions\fdmprinter.def.json
-    /// Leave empty to skip (slice may fail on CuraEngine 5.x without this).
+    /// Example: C:\Program Files\UltiMaker Cura 5.12.0\share\cura\resources\definitions\fdmprinter.def.json
     /// </summary>
     public string DefinitionsPath { get; set; } = "";
+
+    /// <summary>
+    /// Path to fdmextruder.def.json for extruder-0 settings (required in CuraEngine 5.x).
+    /// Example: C:\Program Files\UltiMaker Cura 5.12.0\share\cura\resources\definitions\fdmextruder.def.json
+    /// </summary>
+    public string ExtruderDefinitionsPath { get; set; } = "";
 
     /// <summary>Maximum time to wait for a slice operation before killing the process.</summary>
     public int TimeoutSeconds { get; set; } = 600;

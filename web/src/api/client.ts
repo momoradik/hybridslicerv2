@@ -52,6 +52,9 @@ export const jobsApi = {
   planHybrid: (id: string, machineEveryN: number) =>
     http.post(`/jobs/${id}/plan-hybrid`, { machineEveryNLayers: machineEveryN }).then(r => r.data),
 
+  getPrintGCode: (id: string) =>
+    http.get<string>(`/jobs/${id}/print-gcode`, { responseType: 'text' }).then(r => r.data),
+
   downloadGCode: (id: string) =>
     http.get(`/jobs/${id}/gcode`, { responseType: 'blob' }).then(r => r.data),
 

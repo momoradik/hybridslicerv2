@@ -1,5 +1,7 @@
+using System.Text;
 using HybridSlicer.Application.Interfaces;
 using HybridSlicer.Application.Interfaces.Repositories;
+using HybridSlicer.Domain.Enums;
 using HybridSlicer.Domain.Exceptions;
 using MediatR;
 using Microsoft.Extensions.Logging;
@@ -12,6 +14,7 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
     private readonly IPrintProfileRepository _printProfiles;
     private readonly IMachineProfileRepository _machines;
     private readonly ISlicingEngine _slicer;
+    private readonly ICustomGCodeBlockRepository _customGCode;
     private readonly ILogger<SlicePrintJobHandler> _logger;
 
     public SlicePrintJobHandler(
@@ -19,12 +22,14 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
         IPrintProfileRepository printProfiles,
         IMachineProfileRepository machines,
         ISlicingEngine slicer,
+        ICustomGCodeBlockRepository customGCode,
         ILogger<SlicePrintJobHandler> logger)
     {
         _jobs = jobs;
         _printProfiles = printProfiles;
         _machines = machines;
         _slicer = slicer;
+        _customGCode = customGCode;
         _logger = logger;
     }
 
@@ -62,8 +67,8 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
                 BedTemperatureDegC:    profile.BedTemperatureDegC,
                 RetractLengthMm:       profile.RetractLengthMm,
                 RetractSpeedMmS:       profile.RetractSpeedMmS,
-                SupportEnabled:        profile.SupportEnabled,
-                SupportType:           profile.SupportType,
+                SupportEnabled:        job.SupportEnabled,
+                SupportType:           job.SupportType,
                 CoolingEnabled:        profile.CoolingEnabled,
                 CoolingFanSpeedPct:    profile.CoolingFanSpeedPct,
                 FilamentDiameterMm:    profile.FilamentDiameterMm,
@@ -73,6 +78,8 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
                 NozzleDiameterMm:      machine.NozzleDiameterMm);
 
             var result = await _slicer.SliceAsync(job.StlFilePath, parameters, ct);
+
+            await InjectCustomGCodeAsync(result.GCodeFilePath, ct);
 
             job.MarkSlicingComplete(result.GCodeFilePath, result.TotalLayers);
             await _jobs.UpdateAsync(job, ct);
@@ -93,5 +100,40 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
             await _jobs.UpdateAsync(job, ct);
             throw;
         }
+    }
+
+    private async Task InjectCustomGCodeAsync(string gcodePath, CancellationToken ct)
+    {
+        var startBlocks = (await _customGCode.GetByTriggerAsync(GCodeTrigger.JobStart, ct))
+            .Where(b => b.IsEnabled).OrderBy(b => b.SortOrder).ToList();
+        var endBlocks = (await _customGCode.GetByTriggerAsync(GCodeTrigger.JobEnd, ct))
+            .Where(b => b.IsEnabled).OrderBy(b => b.SortOrder).ToList();
+
+        if (startBlocks.Count == 0 && endBlocks.Count == 0) return;
+
+        var original = await File.ReadAllTextAsync(gcodePath, ct);
+        var sb = new StringBuilder();
+
+        if (startBlocks.Count > 0)
+        {
+            sb.AppendLine("; === Custom G-code: Job Start ===");
+            foreach (var block in startBlocks)
+                sb.AppendLine(block.GCodeContent);
+            sb.AppendLine("; === End Custom G-code ===");
+            sb.AppendLine();
+        }
+
+        sb.Append(original);
+
+        if (endBlocks.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("; === Custom G-code: Job End ===");
+            foreach (var block in endBlocks)
+                sb.AppendLine(block.GCodeContent);
+            sb.AppendLine("; === End Custom G-code ===");
+        }
+
+        await File.WriteAllTextAsync(gcodePath, sb.ToString(), ct);
     }
 }

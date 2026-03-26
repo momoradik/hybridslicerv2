@@ -51,9 +51,10 @@ interface Props {
   buildVolume?: BuildVolume
   onModelLoaded?: (id: string, size: { x: number; y: number; z: number }) => void
   onTransformChange?: (id: string, t: ModelTransform) => void
-  onModelSelect?: (id: string) => void
+  onModelSelect?: (id: string | null) => void
   onBoundsChange?: (id: string, out: boolean) => void
   onFaceSelected?: (selected: boolean) => void
+  onSizeChange?: (id: string, size: { x: number; y: number; z: number }) => void
 }
 
 // ── Coordinate-space helpers ──────────────────────────────────────────────────
@@ -131,6 +132,7 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
     onModelSelect,
     onBoundsChange,
     onFaceSelected,
+    onSizeChange,
   },
   ref,
 ) {
@@ -154,6 +156,8 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
   const hasDraggedRef    = useRef(false)
   const mouseDownPxRef   = useRef({ x: 0, y: 0 })
   const dragOffsetRef    = useRef({ x: 0, z: 0 })
+  // Empty-area click tracking (for deselect-on-click-empty)
+  const emptyClickPxRef  = useRef<{ x: number; y: number } | null>(null)
 
   // Use state so effects that depend on scene being ready re-run correctly
   const [sceneReady, setSceneReady] = useState(false)
@@ -167,6 +171,7 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
   const onBoundsChangeRef   = useRef(onBoundsChange);    onBoundsChangeRef.current = onBoundsChange
   const onFaceSelectedRef   = useRef(onFaceSelected);    onFaceSelectedRef.current = onFaceSelected
   const onModelLoadedRef    = useRef(onModelLoaded);     onModelLoadedRef.current = onModelLoaded
+  const onSizeChangeRef     = useRef(onSizeChange);      onSizeChangeRef.current  = onSizeChange
 
   // ── Color / bounds helpers ────────────────────────────────────────────────
 
@@ -239,9 +244,9 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
         data.group.quaternion.premultiply(q)
       }
 
-      // Snap lowest point to bed (Y = 0)
+      // Snap lowest point to bed (Y = 0) — use precise=true to get exact vertex-level AABB
       data.group.updateMatrixWorld(true)
-      const wb = new THREE.Box3().setFromObject(data.group)
+      const wb = new THREE.Box3().setFromObject(data.group, true)
       data.group.position.y -= wb.min.y
 
       data.currentTransform = extractTransform(data.group, data.currentTransform)
@@ -281,7 +286,7 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
       const data = meshMapRef.current.get(id)
       if (!data) return
       data.group.updateMatrixWorld(true)
-      const wb = new THREE.Box3().setFromObject(data.group)
+      const wb = new THREE.Box3().setFromObject(data.group, true)
       data.group.position.y -= wb.min.y
       if (data.group.position.y < 0) data.group.position.y = 0
       data.currentTransform.z = data.group.position.y
@@ -395,6 +400,9 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
       if (!data) return
       data.group.updateMatrixWorld(true)
       data.currentTransform = extractTransform(data.group, data.currentTransform)
+      const wb = new THREE.Box3().setFromObject(data.group)
+      const ws = wb.getSize(new THREE.Vector3())
+      onSizeChangeRef.current?.(id, { x: ws.x, y: ws.z, z: ws.y })
       onBoundsChangeRef.current?.(id, modelIsOOB(data.group, buildVolumeRef.current))
       onTransformChangeRef.current?.(id, { ...data.currentTransform })
       paintMesh(id)
@@ -404,6 +412,7 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
       if (e.button !== 0) return
 
       raycaster.setFromCamera(toNDC(e), camera)
+      emptyClickPxRef.current = null
 
       // ── 1. Check gizmo handles first ──────────────────────────────────────
       const hitHandle = gizmo.hitTest(raycaster)
@@ -423,10 +432,18 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
       // ── 2. Check model meshes ─────────────────────────────────────────────
       const allMeshes: THREE.Mesh[] = []
       for (const d of meshMapRef.current.values()) allMeshes.push(d.mesh)
-      if (allMeshes.length === 0) return
+
+      if (allMeshes.length === 0) {
+        emptyClickPxRef.current = { x: e.clientX, y: e.clientY }
+        return
+      }
 
       const hits = raycaster.intersectObjects(allMeshes, false)
-      if (hits.length === 0) return
+      if (hits.length === 0) {
+        // Clicked on empty area — track for potential deselect
+        emptyClickPxRef.current = { x: e.clientX, y: e.clientY }
+        return
+      }
 
       const hitMesh = hits[0].object as THREE.Mesh
       let hitId: string | null = null
@@ -493,6 +510,9 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
             const now = Date.now()
             if (now - lastCbMs >= 40) {
               lastCbMs = now
+              const wb = new THREE.Box3().setFromObject(data.group)
+              const ws = wb.getSize(new THREE.Vector3())
+              onSizeChangeRef.current?.(selId, { x: ws.x, y: ws.z, z: ws.y })
               onTransformChangeRef.current?.(selId, { ...data.currentTransform })
             }
             paintMesh(selId)
@@ -527,6 +547,18 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
     const onMouseUp = (e: MouseEvent) => {
       const id = draggingIdRef.current
       controls.enabled = true
+
+      // Empty-area single click → deselect
+      if (!id && emptyClickPxRef.current) {
+        const dx = e.clientX - emptyClickPxRef.current.x
+        const dy = e.clientY - emptyClickPxRef.current.y
+        if (Math.sqrt(dx * dx + dy * dy) <= 3 && selectedIdRef.current) {
+          clearFace(selectedIdRef.current)
+          onModelSelectRef.current?.(null)
+        }
+        emptyClickPxRef.current = null
+        return
+      }
 
       if (!id) return
 
@@ -575,7 +607,21 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
       hasDraggedRef.current = false
     }
 
+    // Double-click on a model → attach gizmo to selected model
+    const onDblClick = (e: MouseEvent) => {
+      raycaster.setFromCamera(toNDC(e), camera)
+      const selId = selectedIdRef.current
+      if (!selId) return
+      const data = meshMapRef.current.get(selId)
+      if (!data) return
+      const hits = raycaster.intersectObject(data.mesh, false)
+      if (hits.length > 0) {
+        gizmoRef.current?.attachTo(data.group)
+      }
+    }
+
     renderer.domElement.addEventListener('mousedown', onMouseDown)
+    renderer.domElement.addEventListener('dblclick', onDblClick)
     window.addEventListener('mousemove', onMouseMove)
     window.addEventListener('mouseup', onMouseUp)
 
@@ -609,6 +655,7 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
       gizmo.dispose()
       gizmoRef.current = null
       renderer.domElement.removeEventListener('mousedown', onMouseDown)
+      renderer.domElement.removeEventListener('dblclick', onDblClick)
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('mouseup', onMouseUp)
       renderer.dispose()
@@ -713,6 +760,7 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
             const size = new THREE.Vector3()
             bb.getSize(size)
             geometry.translate(0, size.y / 2, 0) // base at Y=0
+            geometry.computeBoundingBox()         // refresh BB after translate so setFromObject is correct
 
             const mesh = new THREE.Mesh(
               geometry,
@@ -766,6 +814,9 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
         applyTransform(existing.group, model.transform)
         existing.currentTransform = { ...model.transform }
         existing.group.updateMatrixWorld(true)
+        const wb = new THREE.Box3().setFromObject(existing.group)
+        const ws = wb.getSize(new THREE.Vector3())
+        onSizeChangeRef.current?.(model.id, { x: ws.x, y: ws.z, z: ws.y })
         paintMesh(model.id)
         checkAllBounds()
       }
@@ -785,11 +836,16 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
 
     if (selectedId) {
       const data = meshMapRef.current.get(selectedId)
-      if (data && data.mesh.geometry.attributes.position) {
-        const helper = new THREE.BoxHelper(data.group, 0xfbbf24)
-        scene.add(helper)
-        boxHelperRef.current = helper
+      if (data) {
+        // Gizmo is NOT auto-attached on selection — use double-click to show gizmo
+        if (data.mesh.geometry.attributes.position) {
+          const helper = new THREE.BoxHelper(data.group, 0xfbbf24)
+          scene.add(helper)
+          boxHelperRef.current = helper
+        }
       }
+    } else {
+      gizmoRef.current?.attachTo(null)
     }
 
     paintAll()

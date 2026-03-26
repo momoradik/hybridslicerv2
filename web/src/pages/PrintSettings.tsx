@@ -25,7 +25,6 @@ export default function PrintSettings() {
     printTemperatureDegC: 210,
     bedTemperatureDegC: 60,
     retractLengthMm: 5,
-    supportEnabled: false,
   }
 
   return (
@@ -75,13 +74,6 @@ export default function PrintSettings() {
             <NumberField label="Bed Temp (°C)" value={selected.bedTemperatureDegC ?? 60}
               min={0} max={120}
               onChange={v => setSelected({ ...selected, bedTemperatureDegC: v })} />
-
-            <label className="flex items-center gap-2 text-sm text-gray-300">
-              <input type="checkbox" checked={selected.supportEnabled ?? false}
-                onChange={e => setSelected({ ...selected, supportEnabled: e.target.checked })}
-                className="accent-primary" />
-              Enable Support
-            </label>
 
             <div className="flex gap-3 justify-end pt-2">
               <button onClick={() => setSelected(null)} className="px-4 py-2 bg-gray-800 text-gray-300 rounded-lg text-sm">Cancel</button>

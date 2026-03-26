@@ -8,7 +8,9 @@ public sealed record ImportStlCommand(
     string OriginalFileName,
     Guid MachineProfileId,
     Guid PrintProfileId,
-    Guid MaterialId) : IRequest<ImportStlResult>;
+    Guid MaterialId,
+    bool SupportEnabled = false,
+    string SupportType = "normal") : IRequest<ImportStlResult>;
 
 public sealed record ImportStlResult(
     Guid JobId,

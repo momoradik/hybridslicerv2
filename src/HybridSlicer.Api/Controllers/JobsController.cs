@@ -32,10 +32,9 @@ public sealed class JobsController : ControllerBase
         return job is null ? NotFound() : Ok(job);
     }
 
-    [HttpPost("{id:guid}/upload-stl")]
+    [HttpPost("upload-stl")]
     [RequestSizeLimit(256 * 1024 * 1024)]
     public async Task<IActionResult> UploadStl(
-        Guid id,
         [FromForm] UploadStlRequest request,
         CancellationToken ct)
     {
@@ -48,7 +47,9 @@ public sealed class JobsController : ControllerBase
             OriginalFileName: request.File.FileName,
             MachineProfileId: request.MachineProfileId,
             PrintProfileId: request.PrintProfileId,
-            MaterialId: request.MaterialId), ct);
+            MaterialId: request.MaterialId,
+            SupportEnabled: request.SupportEnabled,
+            SupportType: request.SupportType), ct);
 
         return CreatedAtAction(nameof(GetById), new { id = result.JobId }, result);
     }
@@ -90,6 +91,17 @@ public sealed class JobsController : ControllerBase
         return Accepted(result);
     }
 
+    [HttpGet("{id:guid}/print-gcode")]
+    public async Task<IActionResult> GetPrintGCode(Guid id, CancellationToken ct)
+    {
+        var job = await _jobs.GetByIdAsync(id, ct);
+        if (job is null) return NotFound();
+        if (job.PrintGCodePath is null) return BadRequest("Print G-code not yet generated.");
+        if (!System.IO.File.Exists(job.PrintGCodePath)) return NotFound("G-code file not found on disk.");
+        var stream = System.IO.File.OpenRead(job.PrintGCodePath);
+        return File(stream, "text/plain");
+    }
+
     [HttpGet("{id:guid}/gcode")]
     public async Task<IActionResult> DownloadGCode(Guid id, CancellationToken ct)
     {
@@ -113,7 +125,9 @@ public record UploadStlRequest(
     [FromForm] string JobName,
     [FromForm] Guid MachineProfileId,
     [FromForm] Guid PrintProfileId,
-    [FromForm] Guid MaterialId);
+    [FromForm] Guid MaterialId,
+    [FromForm] bool SupportEnabled = false,
+    [FromForm] string SupportType = "normal");
 
 public record CreateJobRequest(string JobName, Guid MachineProfileId, Guid PrintProfileId, Guid MaterialId);
 public record GenerateToolpathsRequest(Guid CncToolId, int MachineEveryNLayers);

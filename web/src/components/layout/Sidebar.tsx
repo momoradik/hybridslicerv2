@@ -2,17 +2,19 @@ import { NavLink } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { brandingApi } from '../../api/client'
 
-const navItems = [
-  { to: '/dashboard',       label: 'Dashboard',        icon: '⬛' },
-  { to: '/import',          label: 'Import STL',        icon: '📁' },
-  { to: '/print-settings',  label: 'Print Settings',    icon: '🖨️' },
-  { to: '/machine-config',  label: 'Machine Config',    icon: '⚙️' },
-  { to: '/tools',           label: 'Tool Library',      icon: '🔧' },
-  { to: '/hybrid-planner',  label: 'Hybrid Planner',    icon: '🔀' },
-  { to: '/custom-gcode',    label: 'Custom G-code',     icon: '📝' },
-  { to: '/calibration',     label: 'Calibration',       icon: '📐' },
-  { to: '/settings/branding', label: 'Branding',        icon: '🎨' },
+const allNavItems = [
+  { to: '/dashboard',         label: 'Dashboard',      icon: '⬛', devOnly: false },
+  { to: '/import',            label: 'Import STL',     icon: '📁', devOnly: false },
+  { to: '/print-settings',    label: 'Print Settings', icon: '🖨️', devOnly: false },
+  { to: '/machine-config',    label: 'Machine Config', icon: '⚙️', devOnly: false },
+  { to: '/tools',             label: 'Tool Library',   icon: '🔧', devOnly: false },
+  { to: '/hybrid-planner',    label: 'Hybrid Planner', icon: '🔀', devOnly: false },
+  { to: '/custom-gcode',      label: 'Custom G-code',  icon: '📝', devOnly: false },
+  { to: '/calibration',       label: 'Calibration',    icon: '📐', devOnly: false },
+  { to: '/settings/branding', label: 'Branding',       icon: '🎨', devOnly: true  },
 ]
+
+const navItems = allNavItems.filter(n => !n.devOnly || import.meta.env.DEV)
 
 export default function Sidebar() {
   const { data: branding } = useQuery({
@@ -33,7 +35,7 @@ export default function Sidebar() {
       </div>
 
       <ul className="flex-1 py-3 space-y-0.5 overflow-y-auto">
-        {navItems.map(({ to, label, icon }) => (
+        {navItems.map(({ to, label, icon }) => (  // devOnly already filtered out
           <li key={to}>
             <NavLink
               to={to}

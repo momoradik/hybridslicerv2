@@ -46,6 +46,8 @@ public sealed class MachineProfilesController : ControllerBase
         var profile = await _repo.GetByIdAsync(id, ct);
         if (profile is null) return NotFound();
 
+        if (req.Name is not null) profile.Rename(req.Name);
+
         if (req.CncOffset is not null)
             profile.UpdateCncOffset(new MachineOffset(
                 req.CncOffset.X, req.CncOffset.Y, req.CncOffset.Z, req.CncOffset.RotationDeg));
@@ -96,6 +98,7 @@ public record CreateMachineProfileRequest(
     int Port = 8080);
 
 public record UpdateMachineProfileRequest(
+    string? Name = null,
     OffsetDto? CncOffset = null,
     double? SafeClearanceHeightMm = null);
 

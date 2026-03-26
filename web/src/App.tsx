@@ -9,6 +9,7 @@ import HybridPlanner from './pages/HybridPlanner'
 import CustomGCode from './pages/CustomGCode'
 import Calibration from './pages/Calibration'
 import BrandingPage from './pages/BrandingPage'
+import GCodePage from './pages/GCodePage'
 import NotFound from './pages/NotFound'
 import { useBranding } from './hooks/useBranding'
 
@@ -32,7 +33,10 @@ export default function App() {
             <Route path="hybrid-planner"     element={<HybridPlanner />} />
             <Route path="custom-gcode"       element={<CustomGCode />} />
             <Route path="calibration"        element={<Calibration />} />
-            <Route path="settings/branding"  element={<BrandingPage />} />
+            <Route path="jobs/:id/gcode"     element={<GCodePage />} />
+            {import.meta.env.DEV && (
+              <Route path="settings/branding" element={<BrandingPage />} />
+            )}
             <Route path="*"                  element={<NotFound />} />
           </Route>
         </Routes>

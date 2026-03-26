@@ -108,6 +108,14 @@ public class MachineProfile
         Touch();
     }
 
+    public void Rename(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            throw new DomainException("INVALID_NAME", "Machine profile name must not be empty.");
+        Name = name.Trim();
+        Touch();
+    }
+
     public void SoftDelete()
     {
         IsDeleted = true;

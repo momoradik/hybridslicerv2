@@ -65,7 +65,7 @@ export default function BrandingPage() {
           {saveMutation.isPending ? 'Saving…' : 'Save Branding'}
         </button>
 
-        {saveMutation.isSuccess && <p className="text-green-400 text-sm text-center">Saved! Refresh to apply colors.</p>}
+        {saveMutation.isSuccess && <p className="text-green-400 text-sm text-center">Saved! Colors applied.</p>}
       </div>
     </div>
   )

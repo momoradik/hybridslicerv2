@@ -7,6 +7,9 @@ using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 
+// ── Ensure logs directory exists before Serilog tries to write ───────────────
+Directory.CreateDirectory("logs");
+
 // ── Bootstrap Serilog early ──────────────────────────────────────────────────
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console(outputTemplate:
@@ -89,11 +92,8 @@ try
     // ── Middleware pipeline ──────────────────────────────────────────────────
     app.UseMiddleware<GlobalExceptionMiddleware>();
 
-    if (app.Environment.IsDevelopment())
-    {
-        app.UseSwagger();
-        app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "HybridSlicer v1"));
-    }
+    app.UseSwagger();
+    app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "HybridSlicer v1"));
 
     app.UseSerilogRequestLogging();
     app.UseCors();
