@@ -87,7 +87,7 @@ function extractTransform(group: THREE.Group, _prev: ModelTransform): ModelTrans
 }
 
 function modelIsOOB(group: THREE.Group, bv: BuildVolume): boolean {
-  const wb = new THREE.Box3().setFromObject(group)
+  const wb = new THREE.Box3().setFromObject(group, true)
   return (
     wb.min.x < -bv.width / 2 || wb.max.x > bv.width / 2 ||
     wb.min.z < -bv.depth / 2 || wb.max.z > bv.depth / 2 ||
@@ -145,7 +145,7 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
 
   const buildBoxRef = useRef<THREE.LineSegments | null>(null)
   const bedMeshRef  = useRef<THREE.Mesh | null>(null)
-  const boxHelperRef = useRef<THREE.BoxHelper | null>(null)
+  const boxHelperRef = useRef<{ helper: THREE.Box3Helper; box: THREE.Box3 } | null>(null)
 
   const meshMapRef    = useRef<Map<string, MeshData>>(new Map())
   const loadingIdsRef = useRef<Set<string>>(new Set())
@@ -502,7 +502,7 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
             data.group.updateMatrixWorld(true)
             // Re-seat on bed after rotation
             if (result.rotationChanged) {
-              const wb = new THREE.Box3().setFromObject(data.group)
+              const wb = new THREE.Box3().setFromObject(data.group, true)
               if (wb.min.y < 0) data.group.position.y -= wb.min.y
             }
             data.currentTransform = extractTransform(data.group, data.currentTransform)
@@ -629,7 +629,13 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
     const animate = () => {
       animIdRef.current = requestAnimationFrame(animate)
       controls.update()
-      if (boxHelperRef.current) (boxHelperRef.current as THREE.BoxHelper).update()
+      if (boxHelperRef.current) {
+        const selId = selectedIdRef.current
+        if (selId) {
+          const d = meshMapRef.current.get(selId)
+          if (d) boxHelperRef.current.box.setFromObject(d.group, true)
+        }
+      }
       gizmo.update()   // reposition + rescale gizmo every frame
       renderer.render(scene, camera)
     }
@@ -830,7 +836,7 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
     const scene = sceneRef.current!
 
     if (boxHelperRef.current) {
-      scene.remove(boxHelperRef.current)
+      scene.remove(boxHelperRef.current.helper)
       boxHelperRef.current = null
     }
 
@@ -839,9 +845,10 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
       if (data) {
         // Gizmo is NOT auto-attached on selection — use double-click to show gizmo
         if (data.mesh.geometry.attributes.position) {
-          const helper = new THREE.BoxHelper(data.group, 0xfbbf24)
+          const box = new THREE.Box3().setFromObject(data.group, true)
+          const helper = new THREE.Box3Helper(box, 0xfbbf24)
           scene.add(helper)
-          boxHelperRef.current = helper
+          boxHelperRef.current = { helper, box }
         }
       }
     } else {

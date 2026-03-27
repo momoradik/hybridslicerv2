@@ -146,7 +146,13 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         sb.Append($" -s material_print_temperature={p.PrintTemperatureDegC}");
         sb.Append($" -s material_bed_temperature={p.BedTemperatureDegC}");
         sb.Append($" -s support_enable={p.SupportEnabled.ToString().ToLowerInvariant()}");
-        sb.Append($" -s support_type={p.SupportType}");
+        if (p.SupportEnabled)
+        {
+            // support_type = where supports are placed (everywhere = all overhangs)
+            // support_structure = support geometry type (normal or tree)
+            sb.Append(" -s support_type=everywhere");
+            sb.Append($" -s support_structure={p.SupportType}");
+        }
         sb.Append($" -s cool_fan_enabled={p.CoolingEnabled.ToString().ToLowerInvariant()}");
         sb.Append($" -s cool_fan_speed={p.CoolingFanSpeedPct.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s machine_width={p.BedWidthMm.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");

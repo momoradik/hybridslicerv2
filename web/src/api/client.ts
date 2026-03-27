@@ -79,4 +79,6 @@ export const brandingApi = {
 // ── Materials ─────────────────────────────────────────────────────────────
 export const materialsApi = {
   getAll: () => http.get<Material[]>('/materials').then(r => r.data),
+  create: (data: Partial<Material>) => http.post<Material>('/materials', data).then(r => r.data),
+  delete: (id: string) => http.delete(`/materials/${id}`),
 }

@@ -46,8 +46,8 @@ public static class DbSeeder
         var profile = MachineProfile.Create(
             name:           "Default Hybrid Machine",
             type:           MachineType.Hybrid,
-            bedWidth:       300,
-            bedDepth:       300,
+            bedWidth:       440,
+            bedDepth:       290,
             bedHeight:      350,
             nozzleDiameter: 0.4,
             extruderCount:  1);

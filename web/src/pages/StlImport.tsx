@@ -1,6 +1,9 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import * as THREE from 'three'
+import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
+import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js'
 import StlViewer, {
   type BuildVolume,
   type ModelTransform,
@@ -8,9 +11,68 @@ import StlViewer, {
   type StlViewerHandle,
   DEFAULT_TRANSFORM,
 } from '../components/viewer/StlViewer'
+import GCodePreview3D from '../components/viewer/GCodePreview3D'
 import { jobsApi, machineProfilesApi, printProfilesApi, materialsApi } from '../api/client'
 import { useMachineConnection } from '../hooks/useMachineConnection'
 import { useAppStore } from '../store'
+
+// ── STL transform helper ───────────────────────────────────────────────────────
+// Applies the user's viewer transform to the STL geometry and exports a new binary
+// STL that Cura receives with the correct position/rotation/scale already baked in.
+// Coordinate conversion: Three.js Y-up → Cura Z-up (swap Y↔Z axes).
+async function buildTransformedStlBlob(file: File, transform: ModelTransform): Promise<File> {
+  const loader   = new STLLoader()
+  const exporter = new STLExporter()
+
+  const geo = loader.parse(await file.arrayBuffer())
+
+  // Same pre-processing as StlViewer: centre the geometry then lift base to Y=0
+  geo.center()
+  geo.computeBoundingBox()
+  const size = new THREE.Vector3()
+  geo.boundingBox!.getSize(size)
+  geo.translate(0, size.y / 2, 0)
+
+  // Apply the user transform exactly as StlViewer's applyTransform does
+  const mesh  = new THREE.Mesh(geo)
+  const group = new THREE.Group()
+  group.add(mesh)
+  group.position.set(transform.x, transform.z, transform.y)
+  group.rotation.set(
+    THREE.MathUtils.degToRad(transform.rotX),
+    THREE.MathUtils.degToRad(transform.rotZ),
+    THREE.MathUtils.degToRad(transform.rotY),
+    'XYZ',
+  )
+  group.scale.set(transform.scaleX, transform.scaleZ, transform.scaleY)
+  group.updateMatrixWorld(true)
+
+  // Bake the world matrix into a geometry clone (result is in Three.js world space)
+  const baked = geo.clone()
+  baked.applyMatrix4(mesh.matrixWorld)
+
+  // Convert Three.js world (Y-up: X=right, Y=height, Z=depth)
+  //          → Cura print space (Z-up: X=right, Y=depth, Z=height)
+  // i.e. swap Y and Z
+  const pos = baked.attributes.position as THREE.BufferAttribute
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i)
+    pos.setXYZ(i, x, z, y)
+  }
+  // Swapping two axes is a reflection (det = −1) which reverses winding.
+  // Restore correct winding by swapping vertices 1 and 2 of every triangle.
+  for (let i = 0; i < pos.count; i += 3) {
+    const ax = pos.getX(i+1), ay = pos.getY(i+1), az = pos.getZ(i+1)
+    const bx = pos.getX(i+2), by = pos.getY(i+2), bz = pos.getZ(i+2)
+    pos.setXYZ(i+1, bx, by, bz)
+    pos.setXYZ(i+2, ax, ay, az)
+  }
+  pos.needsUpdate = true
+  baked.computeVertexNormals()
+
+  const dv = exporter.parse(new THREE.Mesh(baked), { binary: true }) as DataView
+  return new File([dv.buffer as ArrayBuffer], file.name, { type: 'application/octet-stream' })
+}
 
 // ── Per-model state ───────────────────────────────────────────────────────────
 
@@ -88,6 +150,35 @@ export default function StlImport() {
   const [machineFormIp, setMachineFormIp] = useState('')
   const [machineFormPort, setMachineFormPort] = useState(80)
 
+  // Print profile modal state
+  const [profileModal, setProfileModal]         = useState(false)
+  const [pfName, setPfName]                     = useState('')
+  const [pfLayerH, setPfLayerH]                 = useState(0.2)
+  const [pfLineW, setPfLineW]                   = useState(0.4)
+  const [pfWalls, setPfWalls]                   = useState(3)
+  const [pfPrintSpeed, setPfPrintSpeed]         = useState(60)
+  const [pfTravelSpeed, setPfTravelSpeed]       = useState(120)
+  const [pfInfill, setPfInfill]                 = useState(20)
+  const [pfPrintTemp, setPfPrintTemp]           = useState(210)
+  const [pfBedTemp, setPfBedTemp]               = useState(60)
+  const [pfInfillPattern, setPfInfillPattern]   = useState('grid')
+
+  // Material modal state
+  const [materialModal, setMaterialModal]       = useState(false)
+  const [mfName, setMfName]                     = useState('')
+  const [mfType, setMfType]                     = useState('PLA')
+  const [mfPrintTempMin, setMfPrintTempMin]     = useState(200)
+  const [mfPrintTempMax, setMfPrintTempMax]     = useState(230)
+  const [mfBedTempMin, setMfBedTempMin]         = useState(50)
+  const [mfBedTempMax, setMfBedTempMax]         = useState(70)
+  const [mfDiameter, setMfDiameter]             = useState(1.75)
+
+  // G-code preview state
+  const [previewGCode, setPreviewGCode]         = useState<string | null>(null)
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false)
+  const [previewError, setPreviewError]         = useState<string | null>(null)
+  const previewFingerprintRef = useRef<string>('')
+
   // Start Print state
   const [isPrinting, setIsPrinting]       = useState(false)
   const [printError, setPrintError]       = useState<string | null>(null)
@@ -109,6 +200,30 @@ export default function StlImport() {
     onSuccess: (_, id) => {
       qc.invalidateQueries({ queryKey: ['machines'] })
       if (machineId === id) setMachineId('')
+    },
+  })
+
+  const createProfileMutation = useMutation({
+    mutationFn: (data: Parameters<typeof printProfilesApi.create>[0]) => printProfilesApi.create(data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['printProfiles'] }); setProfileModal(false) },
+  })
+  const deleteProfileMutation = useMutation({
+    mutationFn: (id: string) => printProfilesApi.delete(id),
+    onSuccess: (_, id) => {
+      qc.invalidateQueries({ queryKey: ['printProfiles'] })
+      if (profileId === id) setProfileId('')
+    },
+  })
+
+  const createMaterialMutation = useMutation({
+    mutationFn: (data: Parameters<typeof materialsApi.create>[0]) => materialsApi.create(data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['materials'] }); setMaterialModal(false) },
+  })
+  const deleteMaterialMutation = useMutation({
+    mutationFn: (id: string) => materialsApi.delete(id),
+    onSuccess: (_, id) => {
+      qc.invalidateQueries({ queryKey: ['materials'] })
+      if (materialId === id) setMaterialId('')
     },
   })
 
@@ -170,7 +285,8 @@ export default function StlImport() {
 
   // ── Model helpers ──────────────────────────────────────────────────────────
 
-  const selectedModel = models.find(m => m.id === selectedId) ?? null
+  const selectedModel   = models.find(m => m.id === selectedId) ?? null
+  const selectedMachine = machines.find(m => m.id === machineId)
 
   const addFile = useCallback((f: File) => {
     if (!f.name.toLowerCase().endsWith('.stl')) return
@@ -265,20 +381,18 @@ export default function StlImport() {
   const handleSubmit = async () => {
     const primary = selectedModel ?? models[0]
     if (!primary || !machineId || !profileId || !materialId || !jobName) return
-    const t = primary.transform
     const fd = new FormData()
-    fd.append('file', primary.file)
+    const transformedFile = await buildTransformedStlBlob(primary.file, primary.transform)
+    fd.append('file', transformedFile, primary.file.name)
     fd.append('jobName', jobName)
     fd.append('machineProfileId', machineId)
     fd.append('printProfileId', profileId)
     fd.append('materialId', materialId)
-    fd.append('positionX', t.x.toString())
-    fd.append('positionY', t.y.toString())
-    fd.append('positionZ', t.z.toString())
     fd.append('supportEnabled', supportEnabled.toString())
     fd.append('supportType', supportType)
     const { jobId } = await uploadMutation.mutateAsync(fd)
     await sliceMutation.mutateAsync(jobId)
+    qc.invalidateQueries({ queryKey: ['jobs'] })
     setGeneratedJobId(jobId)
     setActiveTab('preview')
   }
@@ -302,16 +416,70 @@ export default function StlImport() {
     }
   }
 
-  const canSubmit = models.length > 0 && !!machineId && !!profileId && !!materialId && !!jobName
+  // ── Preview (slice → fetch G-code → render in viewer) ─────────────────────
+
+  const handlePreview = async () => {
+    const primary = selectedModel ?? models[0]
+    if (!primary || !machineId || !profileId || !materialId) return
+    setIsPreviewLoading(true)
+    setPreviewError(null)
+    setPreviewGCode(null)
+    const fp = currentFingerprint
+    try {
+      const fd = new FormData()
+      const transformedFile = await buildTransformedStlBlob(primary.file, primary.transform)
+      fd.append('file', transformedFile, primary.file.name)
+      fd.append('jobName', `${jobName || primary.name}_preview`)
+      fd.append('machineProfileId', machineId)
+      fd.append('printProfileId', profileId)
+      fd.append('materialId', materialId)
+      fd.append('supportEnabled', supportEnabled.toString())
+      fd.append('supportType', supportType)
+      const { jobId } = await jobsApi.uploadStl(fd)
+      await jobsApi.slice(jobId)
+      const gcode = await jobsApi.getPrintGCode(jobId)
+      previewFingerprintRef.current = fp
+      setPreviewGCode(gcode)
+    } catch (err) {
+      const msg = (err as any)?.response?.data?.detail
+        ?? (err as any)?.response?.data?.message
+        ?? (err instanceof Error ? err.message : 'Preview failed')
+      setPreviewError(msg)
+    } finally {
+      setIsPreviewLoading(false)
+    }
+  }
+
+  const canSubmit  = models.length > 0 && !!machineId && !!profileId && !!materialId && !!jobName
     && !uploadMutation.isPending && !sliceMutation.isPending
-  const anyOOB    = models.some(m => m.isOutOfBounds)
+  const canPreview = models.length > 0 && !!machineId && !!profileId && !!materialId
+    && !isPreviewLoading && !uploadMutation.isPending && !sliceMutation.isPending
+  const anyOOB     = models.some(m => m.isOutOfBounds)
 
   const effectiveSize = selectedModel?.size ?? null
+
+  // Fingerprint of all slicing-relevant inputs — used to auto-clear stale preview
+  const currentFingerprint = useMemo(() => {
+    const primary = selectedModel ?? models[0]
+    if (!primary || !machineId || !profileId) return ''
+    return JSON.stringify({
+      id: primary.id, t: primary.transform,
+      machineId, profileId, materialId, supportEnabled, supportType,
+    })
+  }, [selectedModel, models, machineId, profileId, materialId, supportEnabled, supportType])
+
+  // Clear preview whenever slicing inputs change from what was last previewed
+  useEffect(() => {
+    if (currentFingerprint !== previewFingerprintRef.current) {
+      setPreviewGCode(null)
+      setPreviewError(null)
+    }
+  }, [currentFingerprint]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Machine profile modal helpers ─────────────────────────────────────────
 
   const openAddMachine = () => {
-    setMachineFormName(''); setMachineFormBedW(220); setMachineFormBedD(220); setMachineFormBedH(250)
+    setMachineFormName(''); setMachineFormBedW(440); setMachineFormBedD(290); setMachineFormBedH(350)
     setMachineFormNozzle(0.4); setMachineFormExtruders(1); setMachineFormIp(''); setMachineFormPort(80)
     setMachineModal('add')
   }
@@ -371,6 +539,12 @@ export default function StlImport() {
             >
               View Full G-code
             </Link>
+            <Link
+              to="/hybrid-planner"
+              className="px-3 py-1.5 text-xs rounded-lg bg-purple-900/80 hover:bg-purple-800 text-purple-200 border border-purple-700 transition"
+            >
+              Hybrid Planner →
+            </Link>
             {printError && <span className="text-red-400 text-xs">{printError}</span>}
           </div>
           <GCodePreview jobId={generatedJobId} />
@@ -378,9 +552,12 @@ export default function StlImport() {
       ) : (
       <div className="grid grid-cols-2 gap-6 flex-1 min-h-0">
 
-      {/* ── Left: 3D Viewer ─────────────────────────────────────────────── */}
+      {/* ── Left: STL Viewer + G-code Preview ──────────────────────────── */}
+      <div className="flex flex-col gap-3 min-h-0">
+
+      {/* STL 3D viewer */}
       <div
-        className={`bg-gray-900 rounded-xl overflow-hidden relative border-2 transition-colors
+        className={`bg-gray-900 rounded-xl overflow-hidden relative border-2 transition-colors flex-1 min-h-0
           ${isDragOver ? 'border-primary border-dashed' : 'border-gray-700 border-dashed'}`}
         onDrop={handleDrop}
         onDragOver={e => { e.preventDefault(); setIsDragOver(true) }}
@@ -451,6 +628,39 @@ export default function StlImport() {
         )}
       </div>
 
+      {/* G-code 3D Preview panel (shown after Preview is pressed) */}
+      {(isPreviewLoading || previewGCode || previewError) && (
+        <div className="bg-gray-950 rounded-xl overflow-hidden border border-gray-700 flex-shrink-0 h-56 relative">
+          {isPreviewLoading ? (
+            <div className="flex items-center justify-center h-full text-gray-500 text-sm gap-2">
+              <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+              Slicing for preview…
+            </div>
+          ) : previewError ? (
+            <div className="flex items-center justify-center h-full text-red-400 text-xs px-6 text-center">
+              {previewError}
+            </div>
+          ) : previewGCode ? (
+            <>
+              <GCodePreview3D
+              gcode={previewGCode}
+              buildVolume={buildVolume}
+              lineWidth={selectedMachine?.nozzleDiameterMm ?? 0.4}
+              className="w-full h-full"
+            />
+              <div className="absolute top-2 left-2 pointer-events-none select-none">
+                <span className="text-xs text-gray-400 bg-gray-900/80 px-2 py-1 rounded">G-code Preview</span>
+              </div>
+            </>
+          ) : null}
+        </div>
+      )}
+
+      </div>{/* end left flex column */}
+
       {/* ── Right: Config Panel ──────────────────────────────────────────── */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 overflow-y-auto flex flex-col gap-5">
 
@@ -489,16 +699,44 @@ export default function StlImport() {
           </Field>
 
           <Field label="Print Profile">
-            <select className="input" value={profileId} onChange={e => setProfileId(e.target.value)}>
-              <option value="">Select…</option>
-              {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
+            <div className="flex gap-1.5">
+              <select className="input flex-1" value={profileId} onChange={e => setProfileId(e.target.value)}>
+                <option value="">Select…</option>
+                {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <button
+                onClick={() => { setPfName(''); setProfileModal(true) }}
+                className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-gray-200 transition"
+                title="Add print profile"
+              >+</button>
+              {profileId && (
+                <button
+                  onClick={() => { if (confirm('Delete this print profile?')) deleteProfileMutation.mutate(profileId) }}
+                  className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-red-900/60 border border-gray-700 text-gray-400 hover:text-red-300 transition"
+                  title="Delete"
+                >✕</button>
+              )}
+            </div>
           </Field>
           <Field label="Material">
-            <select className="input" value={materialId} onChange={e => setMaterialId(e.target.value)}>
-              <option value="">Select…</option>
-              {materials.map(m => <option key={m.id} value={m.id}>{m.name} ({m.type})</option>)}
-            </select>
+            <div className="flex gap-1.5">
+              <select className="input flex-1" value={materialId} onChange={e => setMaterialId(e.target.value)}>
+                <option value="">Select…</option>
+                {materials.map(m => <option key={m.id} value={m.id}>{m.name} ({m.type})</option>)}
+              </select>
+              <button
+                onClick={() => { setMfName(''); setMaterialModal(true) }}
+                className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-gray-200 transition"
+                title="Add material"
+              >+</button>
+              {materialId && (
+                <button
+                  onClick={() => { if (confirm('Delete this material?')) deleteMaterialMutation.mutate(materialId) }}
+                  className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-red-900/60 border border-gray-700 text-gray-400 hover:text-red-300 transition"
+                  title="Delete"
+                >✕</button>
+              )}
+            </div>
           </Field>
         </section>
 
@@ -737,14 +975,24 @@ export default function StlImport() {
           </p>
         )}
 
-        <button
-          onClick={handleSubmit}
-          disabled={!canSubmit}
-          className="w-full py-2.5 bg-primary/80 hover:bg-primary disabled:opacity-40 disabled:cursor-not-allowed
-                     text-white rounded-lg font-medium transition-colors"
-        >
-          {uploadMutation.isPending ? 'Uploading…' : sliceMutation.isPending ? 'Generating…' : 'Generate G-code'}
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={handlePreview}
+            disabled={!canPreview}
+            className="flex-1 py-2.5 bg-gray-700/80 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed
+                       text-white rounded-lg font-medium transition-colors border border-gray-600"
+          >
+            {isPreviewLoading ? 'Slicing…' : 'Preview'}
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+            className="flex-1 py-2.5 bg-primary/80 hover:bg-primary disabled:opacity-40 disabled:cursor-not-allowed
+                       text-white rounded-lg font-medium transition-colors"
+          >
+            {uploadMutation.isPending ? 'Uploading…' : sliceMutation.isPending ? 'Generating…' : 'Generate G-code'}
+          </button>
+        </div>
 
         {(uploadMutation.isError || sliceMutation.isError) && (
           <p className="text-red-400 text-sm whitespace-pre-wrap">
@@ -760,6 +1008,124 @@ export default function StlImport() {
         )}
       </div>
       </div>
+      )}
+
+      {/* ── Print Profile Modal ──────────────────────────────────────────── */}
+      {profileModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-lg space-y-4">
+            <h3 className="font-semibold text-white">Add Print Profile</h3>
+            <MField label="Name">
+              <input className="input w-full" value={pfName} onChange={e => setPfName(e.target.value)} placeholder="My Profile" />
+            </MField>
+            <div className="grid grid-cols-2 gap-3">
+              <MField label="Layer Height (mm)">
+                <NumInput value={pfLayerH} min={0.05} max={0.5} step={0.05} onChange={setPfLayerH} />
+              </MField>
+              <MField label="Line Width (mm)">
+                <NumInput value={pfLineW} min={0.2} max={1.2} step={0.05} onChange={setPfLineW} />
+              </MField>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <MField label="Wall Count">
+                <NumInput value={pfWalls} min={1} max={20} onChange={setPfWalls} />
+              </MField>
+              <MField label="Print Speed (mm/s)">
+                <NumInput value={pfPrintSpeed} min={1} max={500} onChange={setPfPrintSpeed} />
+              </MField>
+              <MField label="Travel Speed (mm/s)">
+                <NumInput value={pfTravelSpeed} min={1} max={500} onChange={setPfTravelSpeed} />
+              </MField>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <MField label="Infill (%)">
+                <NumInput value={pfInfill} min={0} max={100} onChange={setPfInfill} />
+              </MField>
+              <MField label="Print Temp (°C)">
+                <NumInput value={pfPrintTemp} min={150} max={320} onChange={setPfPrintTemp} />
+              </MField>
+              <MField label="Bed Temp (°C)">
+                <NumInput value={pfBedTemp} min={0} max={150} onChange={setPfBedTemp} />
+              </MField>
+            </div>
+            <MField label="Infill Pattern">
+              <select className="input w-full" value={pfInfillPattern} onChange={e => setPfInfillPattern(e.target.value)}>
+                {['grid','lines','triangles','trihexagon','cubic','concentric','zigzag','cross','gyroid','honeycomb','lightning'].map(p => (
+                  <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
+                ))}
+              </select>
+            </MField>
+            <div className="flex gap-3 justify-end pt-2">
+              <button onClick={() => setProfileModal(false)}
+                className="px-4 py-2 bg-gray-800 text-gray-300 rounded-lg text-sm">Cancel</button>
+              <button
+                onClick={() => createProfileMutation.mutate({
+                  name: pfName, layerHeightMm: pfLayerH, lineWidthMm: pfLineW,
+                  wallCount: pfWalls, printSpeedMmS: pfPrintSpeed, travelSpeedMmS: pfTravelSpeed,
+                  infillDensityPct: pfInfill, infillPattern: pfInfillPattern,
+                  printTemperatureDegC: pfPrintTemp, bedTemperatureDegC: pfBedTemp,
+                  retractLengthMm: 5, supportEnabled: false,
+                })}
+                disabled={!pfName.trim() || createProfileMutation.isPending}
+                className="px-4 py-2 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm"
+              >
+                {createProfileMutation.isPending ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Material Modal ────────────────────────────────────────────────── */}
+      {materialModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-lg space-y-4">
+            <h3 className="font-semibold text-white">Add Material</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <MField label="Name">
+                <input className="input w-full" value={mfName} onChange={e => setMfName(e.target.value)} placeholder="My PLA" />
+              </MField>
+              <MField label="Type">
+                <input className="input w-full" value={mfType} onChange={e => setMfType(e.target.value)} placeholder="PLA" />
+              </MField>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <MField label="Print Temp Min (°C)">
+                <NumInput value={mfPrintTempMin} min={100} max={400} onChange={setMfPrintTempMin} />
+              </MField>
+              <MField label="Print Temp Max (°C)">
+                <NumInput value={mfPrintTempMax} min={100} max={400} onChange={setMfPrintTempMax} />
+              </MField>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <MField label="Bed Temp Min (°C)">
+                <NumInput value={mfBedTempMin} min={0} max={150} onChange={setMfBedTempMin} />
+              </MField>
+              <MField label="Bed Temp Max (°C)">
+                <NumInput value={mfBedTempMax} min={0} max={150} onChange={setMfBedTempMax} />
+              </MField>
+              <MField label="Diameter (mm)">
+                <NumInput value={mfDiameter} min={0.5} max={5} step={0.05} onChange={setMfDiameter} />
+              </MField>
+            </div>
+            <div className="flex gap-3 justify-end pt-2">
+              <button onClick={() => setMaterialModal(false)}
+                className="px-4 py-2 bg-gray-800 text-gray-300 rounded-lg text-sm">Cancel</button>
+              <button
+                onClick={() => createMaterialMutation.mutate({
+                  name: mfName, type: mfType,
+                  printTempMinDegC: mfPrintTempMin, printTempMaxDegC: mfPrintTempMax,
+                  bedTempMinDegC: mfBedTempMin, bedTempMaxDegC: mfBedTempMax,
+                  diameterMm: mfDiameter,
+                })}
+                disabled={!mfName.trim() || !mfType.trim() || createMaterialMutation.isPending}
+                className="px-4 py-2 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm"
+              >
+                {createMaterialMutation.isPending ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── Machine Profile Modal ─────────────────────────────────────────── */}
