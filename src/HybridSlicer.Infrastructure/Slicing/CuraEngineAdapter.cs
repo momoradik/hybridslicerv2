@@ -159,6 +159,10 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         sb.Append($" -s machine_depth={p.BedDepthMm.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s machine_height={p.BedHeightMm.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s machine_nozzle_size={p.NozzleDiameterMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
+        // The STL viewer and the G-code preview both use an origin at the bed centre
+        // (X ∈ [-width/2, +width/2], Y ∈ [-depth/2, +depth/2]).  Tell CuraEngine to
+        // use the same convention so model positions and support placement match exactly.
+        sb.Append(" -s machine_center_is_zero=true");
         sb.Append(" -s adhesion_type=none");
 
         // Extruder-0 settings (required in CuraEngine 5.x to avoid "no value given" errors)
@@ -173,6 +177,9 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         // without being explicitly set, causing "Trying to retrieve setting with no value given" errors.
         sb.Append(" -s roofing_layer_count=0");
         sb.Append(" -s flooring_layer_count=0");
+        // support_z_seam_away_from_model has no default and causes a segfault in the support generator
+        // when support_enable=true and the setting is queried without a value.
+        sb.Append(" -s support_z_seam_away_from_model=false");
 
         // Input model and output G-code — use filenames only because
         // WorkingDirectory is already set to the job's folder.
