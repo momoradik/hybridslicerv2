@@ -23,6 +23,7 @@ public class PrintJob
     // Per-job overrides
     public bool SupportEnabled { get; private set; }
     public string SupportType { get; private set; } = "normal";
+    public string SupportPlacement { get; private set; } = "everywhere";
     public string InfillPattern { get; private set; } = "grid";
 
     // Generated artefact paths (relative to job storage root)
@@ -49,6 +50,7 @@ public class PrintJob
         Guid materialId,
         bool supportEnabled = false,
         string supportType = "normal",
+        string supportPlacement = "everywhere",
         string infillPattern = "grid")
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -67,6 +69,7 @@ public class PrintJob
             MaterialId = materialId,
             SupportEnabled = supportEnabled,
             SupportType = string.IsNullOrWhiteSpace(supportType) ? "normal" : supportType,
+            SupportPlacement = string.IsNullOrWhiteSpace(supportPlacement) ? "everywhere" : supportPlacement,
             InfillPattern = string.IsNullOrWhiteSpace(infillPattern) ? "grid" : infillPattern,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow

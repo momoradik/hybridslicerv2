@@ -50,6 +50,7 @@ public sealed class JobsController : ControllerBase
             MaterialId: request.MaterialId,
             SupportEnabled: request.SupportEnabled,
             SupportType: request.SupportType,
+            SupportPlacement: request.SupportPlacement,
             InfillPattern: request.InfillPattern), ct);
 
         return CreatedAtAction(nameof(GetById), new { id = result.JobId }, result);
@@ -129,6 +130,7 @@ public record UploadStlRequest(
     [FromForm] Guid MaterialId,
     [FromForm] bool SupportEnabled = false,
     [FromForm] string SupportType = "normal",
+    [FromForm] string SupportPlacement = "everywhere",
     [FromForm] string InfillPattern = "grid");
 
 public record CreateJobRequest(string JobName, Guid MachineProfileId, Guid PrintProfileId, Guid MaterialId);

@@ -49,6 +49,7 @@ public sealed record SlicingParameters(
     // Support
     bool SupportEnabled,
     string SupportType,
+    string SupportPlacement,
 
     // Cooling
     bool CoolingEnabled,

@@ -148,9 +148,10 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         sb.Append($" -s support_enable={p.SupportEnabled.ToString().ToLowerInvariant()}");
         if (p.SupportEnabled)
         {
-            // support_type = where supports are placed (everywhere = all overhangs)
+            // support_type = where supports are placed (everywhere or touching_buildplate)
             // support_structure = support geometry type (normal or tree)
-            sb.Append(" -s support_type=everywhere");
+            var placement = string.IsNullOrWhiteSpace(p.SupportPlacement) ? "everywhere" : p.SupportPlacement;
+            sb.Append($" -s support_type={placement}");
             sb.Append($" -s support_structure={p.SupportType}");
         }
         sb.Append($" -s cool_fan_enabled={p.CoolingEnabled.ToString().ToLowerInvariant()}");

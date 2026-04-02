@@ -84,7 +84,13 @@ interface ModelState extends ModelEntry {
 
 // ── Module-level persistence (survives React navigation) ──────────────────────
 
-type InfillPattern = 'grid' | 'lines' | 'triangles' | 'honeycomb' | 'gyroid' | 'concentric' | 'zigzag' | 'lightning'
+type InfillPattern =
+  | 'grid' | 'lines' | 'triangles' | 'trihexagon'
+  | 'cubic' | 'cubicsubdiv' | 'tetrahedral' | 'quarter_cubic'
+  | 'concentric' | 'zigzag' | 'cross' | 'cross_3d'
+  | 'gyroid' | 'lightning'
+
+type SupportPlacement = 'everywhere' | 'touching_buildplate'
 
 interface SavedState {
   models: ModelState[]
@@ -97,13 +103,14 @@ interface SavedState {
   activeTab: 'import' | 'preview'
   supportEnabled: boolean
   supportType: 'normal' | 'tree'
+  supportPlacement: SupportPlacement
   infillPattern: InfillPattern
 }
 
 const _initState: SavedState = {
   models: [], selectedId: null, jobName: '', machineId: '', profileId: '', materialId: '',
   generatedJobId: null, activeTab: 'import', supportEnabled: false, supportType: 'normal',
-  infillPattern: 'grid',
+  supportPlacement: 'everywhere', infillPattern: 'grid',
 }
 let _saved: SavedState = { ..._initState }
 
@@ -140,6 +147,7 @@ export default function StlImport() {
   const [generatedJobId, setGeneratedJobId] = useState<string | null>(() => _saved.generatedJobId)
   const [supportEnabled, setSupportEnabled] = useState(() => _saved.supportEnabled)
   const [supportType, setSupportType]     = useState<'normal' | 'tree'>(() => _saved.supportType)
+  const [supportPlacement, setSupportPlacement] = useState<SupportPlacement>(() => _saved.supportPlacement)
   const [infillPattern, setInfillPattern] = useState<InfillPattern>(() => _saved.infillPattern)
 
   const [buildVolume, setBuildVolume]     = useState<BuildVolume>({ width: 220, depth: 220, height: 250 })
@@ -253,6 +261,7 @@ export default function StlImport() {
   useEffect(() => { _saved.generatedJobId = generatedJobId }, [generatedJobId])
   useEffect(() => { _saved.supportEnabled = supportEnabled }, [supportEnabled])
   useEffect(() => { _saved.supportType = supportType }, [supportType])
+  useEffect(() => { _saved.supportPlacement = supportPlacement }, [supportPlacement])
   useEffect(() => { _saved.infillPattern = infillPattern }, [infillPattern])
 
   // Sync build volume from machine profile
@@ -396,6 +405,7 @@ export default function StlImport() {
     fd.append('materialId', materialId)
     fd.append('supportEnabled', supportEnabled.toString())
     fd.append('supportType', supportType)
+    fd.append('supportPlacement', supportPlacement)
     fd.append('infillPattern', infillPattern)
     const { jobId } = await uploadMutation.mutateAsync(fd)
     await sliceMutation.mutateAsync(jobId)
@@ -442,12 +452,14 @@ export default function StlImport() {
       fd.append('materialId', materialId)
       fd.append('supportEnabled', supportEnabled.toString())
       fd.append('supportType', supportType)
+      fd.append('supportPlacement', supportPlacement)
       fd.append('infillPattern', infillPattern)
       const { jobId } = await jobsApi.uploadStl(fd)
       await jobsApi.slice(jobId)
       const gcode = await jobsApi.getPrintGCode(jobId)
       previewFingerprintRef.current = fp
       setPreviewGCode(gcode)
+      setActiveTab('preview')
     } catch (err) {
       const msg = (err as any)?.response?.data?.detail
         ?? (err as any)?.response?.data?.message
@@ -472,9 +484,9 @@ export default function StlImport() {
     if (!primary || !machineId || !profileId) return ''
     return JSON.stringify({
       id: primary.id, t: primary.transform,
-      machineId, profileId, materialId, supportEnabled, supportType, infillPattern,
+      machineId, profileId, materialId, supportEnabled, supportType, supportPlacement, infillPattern,
     })
-  }, [selectedModel, models, machineId, profileId, materialId, supportEnabled, supportType, infillPattern])
+  }, [selectedModel, models, machineId, profileId, materialId, supportEnabled, supportType, supportPlacement, infillPattern])
 
   // Clear preview whenever slicing inputs change from what was last previewed
   useEffect(() => {
@@ -523,39 +535,54 @@ export default function StlImport() {
     <div className="flex flex-col gap-0 h-[calc(100vh-8rem)]">
       <div className="flex border-b border-gray-800 mb-4 flex-shrink-0">
         <TabBtn active={activeTab === 'import'} onClick={() => setActiveTab('import')}>Import STL</TabBtn>
-        <TabBtn active={activeTab === 'preview'} disabled={!generatedJobId} onClick={() => setActiveTab('preview')}>G-code Preview</TabBtn>
+        <TabBtn
+          active={activeTab === 'preview'}
+          disabled={!previewGCode && !generatedJobId}
+          onClick={() => setActiveTab('preview')}
+        >
+          G-code Preview
+        </TabBtn>
       </div>
 
-      {activeTab === 'preview' && generatedJobId ? (
+      {activeTab === 'preview' && (previewGCode || generatedJobId) ? (
         <div className="flex flex-col gap-3 flex-1 min-h-0">
-          <div className="flex items-center gap-3">
-            {machineConnected ? (
-              <button
-                onClick={handleStartPrint}
-                disabled={isPrinting}
-                className="px-4 py-2 text-sm rounded-lg bg-green-700/80 hover:bg-green-700 disabled:opacity-40
-                           text-white font-medium transition border border-green-600"
-              >
-                {isPrinting ? 'Printing…' : 'Start Print'}
-              </button>
+          <div className="flex items-center gap-3 flex-shrink-0">
+            {generatedJobId ? (
+              <>
+                {machineConnected ? (
+                  <button
+                    onClick={handleStartPrint}
+                    disabled={isPrinting}
+                    className="px-4 py-2 text-sm rounded-lg bg-green-700/80 hover:bg-green-700 disabled:opacity-40
+                               text-white font-medium transition border border-green-600"
+                  >
+                    {isPrinting ? 'Printing…' : 'Start Print'}
+                  </button>
+                ) : (
+                  <span className="text-xs text-gray-500 italic">Machine not connected</span>
+                )}
+                <Link
+                  to={`/jobs/${generatedJobId}/gcode`}
+                  className="px-3 py-1.5 text-xs rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
+                >
+                  View Full G-code
+                </Link>
+                <Link
+                  to="/hybrid-planner"
+                  className="px-3 py-1.5 text-xs rounded-lg bg-purple-900/80 hover:bg-purple-800 text-purple-200 border border-purple-700 transition"
+                >
+                  Hybrid Planner →
+                </Link>
+              </>
             ) : (
-              <span className="text-xs text-gray-500 italic">Machine not connected — cannot start print</span>
+              <span className="text-xs text-amber-400/80">Preview only — click &ldquo;Generate G-code&rdquo; to save this job</span>
             )}
-            <Link
-              to={`/jobs/${generatedJobId}/gcode`}
-              className="px-3 py-1.5 text-xs rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-            >
-              View Full G-code
-            </Link>
-            <Link
-              to="/hybrid-planner"
-              className="px-3 py-1.5 text-xs rounded-lg bg-purple-900/80 hover:bg-purple-800 text-purple-200 border border-purple-700 transition"
-            >
-              Hybrid Planner →
-            </Link>
             {printError && <span className="text-red-400 text-xs">{printError}</span>}
           </div>
-          <GCodePreview jobId={generatedJobId} buildVolume={buildVolume} lineWidth={selectedMachine?.nozzleDiameterMm ?? 0.4} />
+          {generatedJobId
+            ? <GCodePreview jobId={generatedJobId} buildVolume={buildVolume} lineWidth={selectedMachine?.nozzleDiameterMm ?? 0.4} />
+            : <GCodePreviewInline gcode={previewGCode!} buildVolume={buildVolume} lineWidth={selectedMachine?.nozzleDiameterMm ?? 0.4} />
+          }
         </div>
       ) : (
       <div className="grid grid-cols-2 gap-6 flex-1 min-h-0">
@@ -636,34 +663,19 @@ export default function StlImport() {
         )}
       </div>
 
-      {/* G-code 3D Preview panel (shown after Preview is pressed) */}
-      {(isPreviewLoading || previewGCode || previewError) && (
-        <div className="bg-gray-950 rounded-xl overflow-hidden border border-gray-700 flex-shrink-0 h-56 relative">
-          {isPreviewLoading ? (
-            <div className="flex items-center justify-center h-full text-gray-500 text-sm gap-2">
-              <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-              </svg>
-              Slicing for preview…
-            </div>
-          ) : previewError ? (
-            <div className="flex items-center justify-center h-full text-red-400 text-xs px-6 text-center">
-              {previewError}
-            </div>
-          ) : previewGCode ? (
-            <>
-              <GCodePreview3D
-              gcode={previewGCode}
-              buildVolume={buildVolume}
-              lineWidth={selectedMachine?.nozzleDiameterMm ?? 0.4}
-              className="w-full h-full"
-            />
-              <div className="absolute top-2 left-2 pointer-events-none select-none">
-                <span className="text-xs text-gray-400 bg-gray-900/80 px-2 py-1 rounded">G-code Preview</span>
-              </div>
-            </>
-          ) : null}
+      {/* Slicing status indicator (while slicing for preview) */}
+      {isPreviewLoading && (
+        <div className="bg-gray-950 rounded-xl border border-gray-700 flex-shrink-0 h-10 flex items-center justify-center gap-2 text-gray-500 text-sm">
+          <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+          </svg>
+          Slicing for preview…
+        </div>
+      )}
+      {previewError && (
+        <div className="bg-red-950/40 rounded-xl border border-red-800 flex-shrink-0 px-4 py-2 text-red-400 text-xs">
+          {previewError}
         </div>
       )}
 
@@ -763,21 +775,53 @@ export default function StlImport() {
             Enable Support
           </label>
           {supportEnabled && (
-            <div className="flex gap-3 mt-1">
-              {(['normal', 'tree'] as const).map(t => (
-                <label key={t} className="flex items-center gap-1.5 text-sm text-gray-300 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="supportType"
-                    value={t}
-                    checked={supportType === t}
-                    onChange={() => setSupportType(t)}
-                    className="accent-primary"
-                  />
-                  {t.charAt(0).toUpperCase() + t.slice(1)}
-                </label>
-              ))}
-            </div>
+            <>
+              <div className="space-y-1 mt-1">
+                <label className="text-xs text-gray-400">Structure</label>
+                <div className="flex gap-3">
+                  {(['normal', 'tree'] as const).map(t => (
+                    <label key={t} className="flex items-center gap-1.5 text-sm text-gray-300 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="supportType"
+                        value={t}
+                        checked={supportType === t}
+                        onChange={() => setSupportType(t)}
+                        className="accent-primary"
+                      />
+                      {t.charAt(0).toUpperCase() + t.slice(1)}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-gray-400">Placement</label>
+                <div className="flex gap-3">
+                  <label className="flex items-center gap-1.5 text-sm text-gray-300 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="supportPlacement"
+                      value="everywhere"
+                      checked={supportPlacement === 'everywhere'}
+                      onChange={() => setSupportPlacement('everywhere')}
+                      className="accent-primary"
+                    />
+                    Everywhere
+                  </label>
+                  <label className="flex items-center gap-1.5 text-sm text-gray-300 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="supportPlacement"
+                      value="touching_buildplate"
+                      checked={supportPlacement === 'touching_buildplate'}
+                      onChange={() => setSupportPlacement('touching_buildplate')}
+                      className="accent-primary"
+                    />
+                    Touching Buildplate
+                  </label>
+                </div>
+              </div>
+            </>
           )}
         </section>
 
@@ -791,10 +835,16 @@ export default function StlImport() {
               <option value="grid">Grid</option>
               <option value="lines">Lines</option>
               <option value="triangles">Triangles</option>
-              <option value="honeycomb">Honeycomb</option>
-              <option value="gyroid">Gyroid</option>
+              <option value="trihexagon">Tri-Hexagon</option>
+              <option value="cubic">Cubic</option>
+              <option value="cubicsubdiv">Cubic Subdivision</option>
+              <option value="tetrahedral">Octet</option>
+              <option value="quarter_cubic">Quarter Cubic</option>
               <option value="concentric">Concentric</option>
               <option value="zigzag">Zig-Zag</option>
+              <option value="cross">Cross</option>
+              <option value="cross_3d">Cross 3D</option>
+              <option value="gyroid">Gyroid</option>
               <option value="lightning">Lightning</option>
             </select>
           </Field>
@@ -1293,11 +1343,126 @@ function TabBtn({ active, disabled, onClick, children }: {
   )
 }
 
+// ── G-code layer parsing ───────────────────────────────────────────────────────
+
+interface GCodeLayer { layerNum: number; lines: string[] }
+
+function parseGCodeLayers(gcode: string): GCodeLayer[] {
+  const layers: GCodeLayer[] = []
+  let current: GCodeLayer | null = null
+  for (const line of gcode.split('\n')) {
+    const m = line.match(/^;LAYER:(\d+)/)
+    if (m) {
+      if (current) layers.push(current)
+      current = { layerNum: parseInt(m[1]), lines: [line] }
+    } else if (current) {
+      current.lines.push(line)
+    }
+  }
+  if (current) layers.push(current)
+  return layers
+}
+
+// ── G-code text layer viewer ──────────────────────────────────────────────────
+
+function GCodeLayerViewer({ gcode }: { gcode: string }) {
+  const layers = useMemo(() => parseGCodeLayers(gcode), [gcode])
+  const [selectedIdx, setSelectedIdx] = useState(0)
+  const textRef = useRef<HTMLPreElement>(null)
+
+  // Scroll text to top when layer changes
+  useEffect(() => {
+    if (textRef.current) textRef.current.scrollTop = 0
+  }, [selectedIdx])
+
+  const layer = layers[selectedIdx]
+
+  if (layers.length === 0) {
+    return (
+      <div className="flex items-center justify-center flex-1 text-gray-500 text-sm">
+        No layer data found in G-code.
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-1 min-h-0 overflow-hidden rounded-xl border border-gray-700">
+      {/* Layer list sidebar */}
+      <div className="w-16 flex-shrink-0 overflow-y-auto bg-gray-950 border-r border-gray-700">
+        <div className="text-xs text-gray-500 px-2 py-1 sticky top-0 bg-gray-950 border-b border-gray-800 text-center">
+          Layer
+        </div>
+        {layers.map((l, i) => (
+          <button
+            key={l.layerNum}
+            onClick={() => setSelectedIdx(i)}
+            className={`w-full px-1 py-1 text-xs text-center transition-colors
+              ${i === selectedIdx
+                ? 'bg-blue-900/60 text-blue-300 font-medium'
+                : 'text-gray-500 hover:bg-gray-800 hover:text-gray-300'}`}
+          >
+            {l.layerNum}
+          </button>
+        ))}
+      </div>
+      {/* G-code text panel */}
+      <div className="flex-1 overflow-hidden flex flex-col bg-gray-950">
+        <div className="text-xs text-gray-500 px-3 py-1 border-b border-gray-800 flex items-center gap-2 flex-shrink-0">
+          <span className="text-blue-400 font-medium">Layer {layer?.layerNum ?? 0}</span>
+          <span>·</span>
+          <span>{layer?.lines.length ?? 0} lines</span>
+        </div>
+        <pre
+          ref={textRef}
+          className="flex-1 overflow-auto p-3 text-xs text-green-400 font-mono leading-relaxed"
+          style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
+        >
+          {layer?.lines.join('\n') ?? ''}
+        </pre>
+      </div>
+    </div>
+  )
+}
+
+// ── Inline G-code preview (uses already-fetched gcode string) ────────────────
+
+function GCodePreviewInline({ gcode, buildVolume, lineWidth = 0.4 }: {
+  gcode: string
+  buildVolume: BuildVolume
+  lineWidth?: number
+}) {
+  const [view, setView] = useState<'3d' | 'layers'>('3d')
+  return (
+    <div className="flex flex-col flex-1 min-h-0 gap-2">
+      <div className="flex gap-1 flex-shrink-0">
+        <button
+          onClick={() => setView('3d')}
+          className={`px-3 py-1 text-xs rounded-lg border transition-colors
+            ${view === '3d' ? 'bg-blue-900/60 border-blue-600 text-blue-200' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-200'}`}
+        >3D Preview</button>
+        <button
+          onClick={() => setView('layers')}
+          className={`px-3 py-1 text-xs rounded-lg border transition-colors
+            ${view === 'layers' ? 'bg-blue-900/60 border-blue-600 text-blue-200' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-200'}`}
+        >G-code Layers</button>
+      </div>
+      {view === '3d'
+        ? <GCodePreview3D gcode={gcode} buildVolume={buildVolume} lineWidth={lineWidth} className="flex-1 min-h-0" />
+        : <GCodeLayerViewer gcode={gcode} />
+      }
+    </div>
+  )
+}
+
+// ── G-code preview component (3D + layer text) ────────────────────────────────
+
 function GCodePreview({ jobId, buildVolume, lineWidth = 0.4 }: {
   jobId: string
   buildVolume: BuildVolume
   lineWidth?: number
 }) {
+  const [view, setView] = useState<'3d' | 'layers'>('3d')
+
   const { data: gcode, isLoading, isError } = useQuery({
     queryKey: ['print-gcode', jobId],
     queryFn: () => jobsApi.getPrintGCode(jobId),
@@ -1319,11 +1484,32 @@ function GCodePreview({ jobId, buildVolume, lineWidth = 0.4 }: {
   )
 
   return (
-    <GCodePreview3D
-      gcode={gcode}
-      buildVolume={buildVolume}
-      lineWidth={lineWidth}
-      className="flex-1 min-h-0"
-    />
+    <div className="flex flex-col flex-1 min-h-0 gap-2">
+      {/* Sub-view toggle */}
+      <div className="flex gap-1 flex-shrink-0">
+        <button
+          onClick={() => setView('3d')}
+          className={`px-3 py-1 text-xs rounded-lg border transition-colors
+            ${view === '3d'
+              ? 'bg-blue-900/60 border-blue-600 text-blue-200'
+              : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-200'}`}
+        >
+          3D Preview
+        </button>
+        <button
+          onClick={() => setView('layers')}
+          className={`px-3 py-1 text-xs rounded-lg border transition-colors
+            ${view === 'layers'
+              ? 'bg-blue-900/60 border-blue-600 text-blue-200'
+              : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-200'}`}
+        >
+          G-code Layers
+        </button>
+      </div>
+      {view === '3d'
+        ? <GCodePreview3D gcode={gcode} buildVolume={buildVolume} lineWidth={lineWidth} className="flex-1 min-h-0" />
+        : <GCodeLayerViewer gcode={gcode} />
+      }
+    </div>
   )
 }

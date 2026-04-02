@@ -70,6 +70,7 @@ public sealed class ImportStlHandler : IRequestHandler<ImportStlCommand, ImportS
             cmd.MaterialId,
             cmd.SupportEnabled,
             cmd.SupportType,
+            cmd.SupportPlacement,
             cmd.InfillPattern);
 
         await _jobs.AddAsync(job, ct);

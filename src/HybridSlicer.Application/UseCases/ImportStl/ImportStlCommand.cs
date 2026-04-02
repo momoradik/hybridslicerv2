@@ -11,6 +11,7 @@ public sealed record ImportStlCommand(
     Guid MaterialId,
     bool SupportEnabled = false,
     string SupportType = "normal",
+    string SupportPlacement = "everywhere",
     string InfillPattern = "grid") : IRequest<ImportStlResult>;
 
 public sealed record ImportStlResult(
