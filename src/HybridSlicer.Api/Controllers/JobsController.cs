@@ -49,7 +49,8 @@ public sealed class JobsController : ControllerBase
             PrintProfileId: request.PrintProfileId,
             MaterialId: request.MaterialId,
             SupportEnabled: request.SupportEnabled,
-            SupportType: request.SupportType), ct);
+            SupportType: request.SupportType,
+            InfillPattern: request.InfillPattern), ct);
 
         return CreatedAtAction(nameof(GetById), new { id = result.JobId }, result);
     }
@@ -127,7 +128,8 @@ public record UploadStlRequest(
     [FromForm] Guid PrintProfileId,
     [FromForm] Guid MaterialId,
     [FromForm] bool SupportEnabled = false,
-    [FromForm] string SupportType = "normal");
+    [FromForm] string SupportType = "normal",
+    [FromForm] string InfillPattern = "grid");
 
 public record CreateJobRequest(string JobName, Guid MachineProfileId, Guid PrintProfileId, Guid MaterialId);
 public record GenerateToolpathsRequest(Guid CncToolId, int MachineEveryNLayers);

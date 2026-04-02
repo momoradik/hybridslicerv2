@@ -84,6 +84,8 @@ interface ModelState extends ModelEntry {
 
 // ── Module-level persistence (survives React navigation) ──────────────────────
 
+type InfillPattern = 'grid' | 'lines' | 'triangles' | 'honeycomb' | 'gyroid' | 'concentric' | 'zigzag' | 'lightning'
+
 interface SavedState {
   models: ModelState[]
   selectedId: string | null
@@ -95,11 +97,13 @@ interface SavedState {
   activeTab: 'import' | 'preview'
   supportEnabled: boolean
   supportType: 'normal' | 'tree'
+  infillPattern: InfillPattern
 }
 
 const _initState: SavedState = {
   models: [], selectedId: null, jobName: '', machineId: '', profileId: '', materialId: '',
   generatedJobId: null, activeTab: 'import', supportEnabled: false, supportType: 'normal',
+  infillPattern: 'grid',
 }
 let _saved: SavedState = { ..._initState }
 
@@ -136,6 +140,7 @@ export default function StlImport() {
   const [generatedJobId, setGeneratedJobId] = useState<string | null>(() => _saved.generatedJobId)
   const [supportEnabled, setSupportEnabled] = useState(() => _saved.supportEnabled)
   const [supportType, setSupportType]     = useState<'normal' | 'tree'>(() => _saved.supportType)
+  const [infillPattern, setInfillPattern] = useState<InfillPattern>(() => _saved.infillPattern)
 
   const [buildVolume, setBuildVolume]     = useState<BuildVolume>({ width: 220, depth: 220, height: 250 })
 
@@ -248,6 +253,7 @@ export default function StlImport() {
   useEffect(() => { _saved.generatedJobId = generatedJobId }, [generatedJobId])
   useEffect(() => { _saved.supportEnabled = supportEnabled }, [supportEnabled])
   useEffect(() => { _saved.supportType = supportType }, [supportType])
+  useEffect(() => { _saved.infillPattern = infillPattern }, [infillPattern])
 
   // Sync build volume from machine profile
   useEffect(() => {
@@ -390,6 +396,7 @@ export default function StlImport() {
     fd.append('materialId', materialId)
     fd.append('supportEnabled', supportEnabled.toString())
     fd.append('supportType', supportType)
+    fd.append('infillPattern', infillPattern)
     const { jobId } = await uploadMutation.mutateAsync(fd)
     await sliceMutation.mutateAsync(jobId)
     qc.invalidateQueries({ queryKey: ['jobs'] })
@@ -435,6 +442,7 @@ export default function StlImport() {
       fd.append('materialId', materialId)
       fd.append('supportEnabled', supportEnabled.toString())
       fd.append('supportType', supportType)
+      fd.append('infillPattern', infillPattern)
       const { jobId } = await jobsApi.uploadStl(fd)
       await jobsApi.slice(jobId)
       const gcode = await jobsApi.getPrintGCode(jobId)
@@ -464,9 +472,9 @@ export default function StlImport() {
     if (!primary || !machineId || !profileId) return ''
     return JSON.stringify({
       id: primary.id, t: primary.transform,
-      machineId, profileId, materialId, supportEnabled, supportType,
+      machineId, profileId, materialId, supportEnabled, supportType, infillPattern,
     })
-  }, [selectedModel, models, machineId, profileId, materialId, supportEnabled, supportType])
+  }, [selectedModel, models, machineId, profileId, materialId, supportEnabled, supportType, infillPattern])
 
   // Clear preview whenever slicing inputs change from what was last previewed
   useEffect(() => {
@@ -547,7 +555,7 @@ export default function StlImport() {
             </Link>
             {printError && <span className="text-red-400 text-xs">{printError}</span>}
           </div>
-          <GCodePreview jobId={generatedJobId} />
+          <GCodePreview jobId={generatedJobId} buildVolume={buildVolume} lineWidth={selectedMachine?.nozzleDiameterMm ?? 0.4} />
         </div>
       ) : (
       <div className="grid grid-cols-2 gap-6 flex-1 min-h-0">
@@ -771,6 +779,25 @@ export default function StlImport() {
               ))}
             </div>
           )}
+        </section>
+
+        <Divider />
+
+        {/* Infill Pattern */}
+        <section className="space-y-2">
+          <SectionHeader>Infill</SectionHeader>
+          <Field label="Pattern">
+            <select className="input" value={infillPattern} onChange={e => setInfillPattern(e.target.value as InfillPattern)}>
+              <option value="grid">Grid</option>
+              <option value="lines">Lines</option>
+              <option value="triangles">Triangles</option>
+              <option value="honeycomb">Honeycomb</option>
+              <option value="gyroid">Gyroid</option>
+              <option value="concentric">Concentric</option>
+              <option value="zigzag">Zig-Zag</option>
+              <option value="lightning">Lightning</option>
+            </select>
+          </Field>
         </section>
 
         <Divider />
@@ -1266,52 +1293,37 @@ function TabBtn({ active, disabled, onClick, children }: {
   )
 }
 
-function GCodePreview({ jobId }: { jobId: string }) {
+function GCodePreview({ jobId, buildVolume, lineWidth = 0.4 }: {
+  jobId: string
+  buildVolume: BuildVolume
+  lineWidth?: number
+}) {
   const { data: gcode, isLoading, isError } = useQuery({
     queryKey: ['print-gcode', jobId],
     queryFn: () => jobsApi.getPrintGCode(jobId),
   })
 
-  const layers = useMemo(() => {
-    if (!gcode) return []
-    const result: string[][] = []
-    let current: string[] = []
-    for (const line of gcode.split('\n')) {
-      if (line.startsWith(';LAYER:')) {
-        if (current.length > 0) result.push(current)
-        current = [line]
-      } else {
-        current.push(line)
-      }
-    }
-    if (current.length > 0) result.push(current)
-    return result
-  }, [gcode])
-
-  const [layerIdx, setLayerIdx] = useState(0)
-
-  if (isLoading) return <p className="text-gray-400 p-4">Loading G-code…</p>
-  if (isError || !gcode) return <p className="text-red-400 p-4">Failed to load G-code.</p>
-
-  const layer = layers[layerIdx] ?? []
+  if (isLoading) return (
+    <div className="flex items-center justify-center flex-1 text-gray-400 text-sm gap-2">
+      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+      </svg>
+      Loading G-code…
+    </div>
+  )
+  if (isError || !gcode) return (
+    <div className="flex items-center justify-center flex-1 text-red-400 text-sm">
+      Failed to load G-code.
+    </div>
+  )
 
   return (
-    <div className="flex flex-col gap-4 flex-1 min-h-0">
-      <div className="flex items-center gap-4">
-        <span className="text-sm text-gray-400 whitespace-nowrap">
-          Layer {layerIdx + 1} / {layers.length}
-        </span>
-        <input
-          type="range"
-          min={0} max={Math.max(0, layers.length - 1)}
-          value={layerIdx}
-          onChange={e => setLayerIdx(+e.target.value)}
-          className="flex-1 accent-primary"
-        />
-      </div>
-      <pre className="flex-1 min-h-0 overflow-auto bg-gray-950 text-green-400 text-xs p-4 rounded-xl font-mono">
-        {layer.join('\n')}
-      </pre>
-    </div>
+    <GCodePreview3D
+      gcode={gcode}
+      buildVolume={buildVolume}
+      lineWidth={lineWidth}
+      className="flex-1 min-h-0"
+    />
   )
 }

@@ -180,6 +180,10 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         // support_z_seam_away_from_model has no default and causes a segfault in the support generator
         // when support_enable=true and the setting is queried without a value.
         sb.Append(" -s support_z_seam_away_from_model=false");
+        // min_wall_line_width has no default and causes a crash during G-code export when
+        // tree support is enabled (the tree support generator queries it at export time).
+        // Formula: 85% of line_width (same as Cura's internal default formula).
+        sb.Append($" -s min_wall_line_width={(p.LineWidthMm * 0.85).ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
 
         // Input model and output G-code — use filenames only because
         // WorkingDirectory is already set to the job's folder.

@@ -20,9 +20,10 @@ public class PrintJob
     public Guid MaterialId { get; private set; }
     public Guid? CncToolId { get; private set; }
 
-    // Per-job support overrides
+    // Per-job overrides
     public bool SupportEnabled { get; private set; }
     public string SupportType { get; private set; } = "normal";
+    public string InfillPattern { get; private set; } = "grid";
 
     // Generated artefact paths (relative to job storage root)
     public string? PrintGCodePath { get; private set; }
@@ -47,7 +48,8 @@ public class PrintJob
         Guid printProfileId,
         Guid materialId,
         bool supportEnabled = false,
-        string supportType = "normal")
+        string supportType = "normal",
+        string infillPattern = "grid")
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new DomainException("INVALID_NAME", "Job name must not be empty.");
@@ -65,6 +67,7 @@ public class PrintJob
             MaterialId = materialId,
             SupportEnabled = supportEnabled,
             SupportType = string.IsNullOrWhiteSpace(supportType) ? "normal" : supportType,
+            InfillPattern = string.IsNullOrWhiteSpace(infillPattern) ? "grid" : infillPattern,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };

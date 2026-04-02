@@ -10,7 +10,8 @@ public sealed record ImportStlCommand(
     Guid PrintProfileId,
     Guid MaterialId,
     bool SupportEnabled = false,
-    string SupportType = "normal") : IRequest<ImportStlResult>;
+    string SupportType = "normal",
+    string InfillPattern = "grid") : IRequest<ImportStlResult>;
 
 public sealed record ImportStlResult(
     Guid JobId,
