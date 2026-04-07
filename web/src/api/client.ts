@@ -55,10 +55,13 @@ export const jobsApi = {
   getPrintGCode: (id: string) =>
     http.get<string>(`/jobs/${id}/print-gcode`, { responseType: 'text' }).then(r => r.data),
 
+  getToolpathGCode: (id: string) =>
+    http.get<string>(`/jobs/${id}/toolpath-gcode`, { responseType: 'text' }).then(r => r.data),
+
   downloadGCode: (id: string) =>
     http.get(`/jobs/${id}/gcode`, { responseType: 'blob' }).then(r => r.data),
 
-  delete: (id: string) => http.delete(`/jobs/${id}`),
+  deleteJob: (id: string) => http.delete(`/jobs/${id}`),
 }
 
 // ── Custom G-code Blocks ──────────────────────────────────────────────────

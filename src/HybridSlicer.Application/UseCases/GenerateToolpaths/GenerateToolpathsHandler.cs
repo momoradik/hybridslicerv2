@@ -1,3 +1,4 @@
+using System.Text;
 using HybridSlicer.Application.Interfaces;
 using HybridSlicer.Application.Interfaces.Repositories;
 using HybridSlicer.Domain.Enums;
@@ -57,6 +58,11 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
         await _jobs.UpdateAsync(job, ct);
 
         var machinedLayers = new List<int>();
+        var gcodeBuilder = new StringBuilder();
+        gcodeBuilder.AppendLine($"; CNC Toolpath G-code — Job: {job.Name}");
+        gcodeBuilder.AppendLine($"; Tool: {tool.Name}  Ø{tool.DiameterMm} mm  Feed: {tool.RecommendedFeedMmPerMin} mm/min  RPM: {tool.RecommendedRpm}");
+        gcodeBuilder.AppendLine($"; Machine every {cmd.MachineEveryNLayers} layer(s)  |  Generated: {DateTime.UtcNow:u}");
+        gcodeBuilder.AppendLine();
 
         try
         {
@@ -83,6 +89,8 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                 if (toolpath.IsEmpty)
                 {
                     _logger.LogDebug("No geometry at layer {Layer} — skipping CNC step", layer);
+                    gcodeBuilder.AppendLine($"; Layer {layer} (Z={zHeight:F3} mm) — no geometry, skipped");
+                    gcodeBuilder.AppendLine();
                     continue;
                 }
 
@@ -106,11 +114,19 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                     _logger.LogWarning("Safety WARNING at layer {Layer}: {Issues}",
                         layer, string.Join("; ", validation.Issues));
 
+                gcodeBuilder.AppendLine($"; ── Layer {layer} (Z={zHeight:F3} mm) ──────────────────────────────");
+                gcodeBuilder.AppendLine(toolpath.GCode.TrimEnd());
+                gcodeBuilder.AppendLine();
+
                 machinedLayers.Add(layer);
                 _logger.LogInformation("Toolpath OK — layer {Layer} [{Status}]", layer, validation.Status);
             }
 
-            job.MarkToolpathsComplete();
+            var jobDir = Path.GetDirectoryName(job.StlFilePath)!;
+            var toolpathGCodePath = Path.Combine(jobDir, "toolpath.gcode");
+            await File.WriteAllTextAsync(toolpathGCodePath, gcodeBuilder.ToString(), ct);
+
+            job.MarkToolpathsComplete(toolpathGCodePath);
             await _jobs.UpdateAsync(job, ct);
 
             _logger.LogInformation("Toolpath generation complete for job {JobId}: {Count} layers",

@@ -12,7 +12,8 @@ public sealed record ImportStlCommand(
     bool SupportEnabled = false,
     string SupportType = "normal",
     string SupportPlacement = "everywhere",
-    string InfillPattern = "grid") : IRequest<ImportStlResult>;
+    string InfillPattern = "grid",
+    double? InfillDensityPct = null) : IRequest<ImportStlResult>;
 
 public sealed record ImportStlResult(
     Guid JobId,

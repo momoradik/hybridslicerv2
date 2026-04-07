@@ -100,12 +100,13 @@ try
 
     app.UseSerilogRequestLogging();
     app.UseCors();
+
+    // Serve the built React SPA (placed in wwwroot by Vite build)
+    app.UseStaticFiles();
+
     app.UseAuthorization();
     app.MapControllers();
     app.MapHub<MachineHub>("/hubs/machine");
-
-    // Serve the built React SPA in production (placed in wwwroot by Vite build)
-    app.UseStaticFiles();
     app.MapFallbackToFile("index.html");
 
     Log.Information("HybridSlicer API ready");

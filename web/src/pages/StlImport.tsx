@@ -105,12 +105,13 @@ interface SavedState {
   supportType: 'normal' | 'tree'
   supportPlacement: SupportPlacement
   infillPattern: InfillPattern
+  infillDensity: number
 }
 
 const _initState: SavedState = {
   models: [], selectedId: null, jobName: '', machineId: '', profileId: '', materialId: '',
   generatedJobId: null, activeTab: 'import', supportEnabled: false, supportType: 'normal',
-  supportPlacement: 'everywhere', infillPattern: 'grid',
+  supportPlacement: 'everywhere', infillPattern: 'grid', infillDensity: 15,
 }
 let _saved: SavedState = { ..._initState }
 
@@ -149,6 +150,7 @@ export default function StlImport() {
   const [supportType, setSupportType]     = useState<'normal' | 'tree'>(() => _saved.supportType)
   const [supportPlacement, setSupportPlacement] = useState<SupportPlacement>(() => _saved.supportPlacement)
   const [infillPattern, setInfillPattern] = useState<InfillPattern>(() => _saved.infillPattern)
+  const [infillDensity, setInfillDensity] = useState<number>(() => _saved.infillDensity)
 
   const [buildVolume, setBuildVolume]     = useState<BuildVolume>({ width: 220, depth: 220, height: 250 })
 
@@ -190,7 +192,10 @@ export default function StlImport() {
   const [previewGCode, setPreviewGCode]         = useState<string | null>(null)
   const [isPreviewLoading, setIsPreviewLoading] = useState(false)
   const [previewError, setPreviewError]         = useState<string | null>(null)
-  const previewFingerprintRef = useRef<string>('')
+  const previewFingerprintRef  = useRef<string>('')
+  const handlePreviewRef      = useRef<() => void>(() => {})
+  const autoPreviewTimer      = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [autoPreviewPending, setAutoPreviewPending] = useState(false)
 
   // Start Print state
   const [isPrinting, setIsPrinting]       = useState(false)
@@ -263,6 +268,7 @@ export default function StlImport() {
   useEffect(() => { _saved.supportType = supportType }, [supportType])
   useEffect(() => { _saved.supportPlacement = supportPlacement }, [supportPlacement])
   useEffect(() => { _saved.infillPattern = infillPattern }, [infillPattern])
+  useEffect(() => { _saved.infillDensity = infillDensity }, [infillDensity])
 
   // Sync build volume from machine profile
   useEffect(() => {
@@ -407,6 +413,7 @@ export default function StlImport() {
     fd.append('supportType', supportType)
     fd.append('supportPlacement', supportPlacement)
     fd.append('infillPattern', infillPattern)
+    fd.append('infillDensityPct', infillDensity.toString())
     const { jobId } = await uploadMutation.mutateAsync(fd)
     await sliceMutation.mutateAsync(jobId)
     qc.invalidateQueries({ queryKey: ['jobs'] })
@@ -454,6 +461,7 @@ export default function StlImport() {
       fd.append('supportType', supportType)
       fd.append('supportPlacement', supportPlacement)
       fd.append('infillPattern', infillPattern)
+      fd.append('infillDensityPct', infillDensity.toString())
       const { jobId } = await jobsApi.uploadStl(fd)
       await jobsApi.slice(jobId)
       const gcode = await jobsApi.getPrintGCode(jobId)
@@ -484,9 +492,12 @@ export default function StlImport() {
     if (!primary || !machineId || !profileId) return ''
     return JSON.stringify({
       id: primary.id, t: primary.transform,
-      machineId, profileId, materialId, supportEnabled, supportType, supportPlacement, infillPattern,
+      machineId, profileId, materialId, supportEnabled, supportType, supportPlacement, infillPattern, infillDensity,
     })
-  }, [selectedModel, models, machineId, profileId, materialId, supportEnabled, supportType, supportPlacement, infillPattern])
+  }, [selectedModel, models, machineId, profileId, materialId, supportEnabled, supportType, supportPlacement, infillPattern, infillDensity])
+
+  // Keep handlePreviewRef current so the debounce timer always calls the latest version
+  useEffect(() => { handlePreviewRef.current = handlePreview })
 
   // Clear preview whenever slicing inputs change from what was last previewed
   useEffect(() => {
@@ -495,6 +506,23 @@ export default function StlImport() {
       setPreviewError(null)
     }
   }, [currentFingerprint]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-preview: 1.5 s after settings stop changing, re-slice through Cura automatically
+  useEffect(() => {
+    if (!currentFingerprint) return                                  // nothing loaded yet
+    if (currentFingerprint === previewFingerprintRef.current) return // preview is already up-to-date
+    if (!canPreview) return                                          // not ready (loading / missing fields)
+    if (autoPreviewTimer.current) clearTimeout(autoPreviewTimer.current)
+    setAutoPreviewPending(true)
+    autoPreviewTimer.current = setTimeout(() => {
+      setAutoPreviewPending(false)
+      handlePreviewRef.current()
+    }, 1500)
+    return () => {
+      if (autoPreviewTimer.current) clearTimeout(autoPreviewTimer.current)
+      setAutoPreviewPending(false)
+    }
+  }, [currentFingerprint, canPreview]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Machine profile modal helpers ─────────────────────────────────────────
 
@@ -664,13 +692,13 @@ export default function StlImport() {
       </div>
 
       {/* Slicing status indicator (while slicing for preview) */}
-      {isPreviewLoading && (
+      {(isPreviewLoading || autoPreviewPending) && (
         <div className="bg-gray-950 rounded-xl border border-gray-700 flex-shrink-0 h-10 flex items-center justify-center gap-2 text-gray-500 text-sm">
           <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
           </svg>
-          Slicing for preview…
+          {isPreviewLoading ? 'Slicing for preview…' : 'Settings changed — re-slicing in a moment…'}
         </div>
       )}
       {previewError && (
@@ -827,9 +855,36 @@ export default function StlImport() {
 
         <Divider />
 
-        {/* Infill Pattern */}
+        {/* Infill */}
         <section className="space-y-2">
           <SectionHeader>Infill</SectionHeader>
+          <Field label="Density">
+            <div className="flex items-center gap-2">
+              <input
+                type="range"
+                min={0} max={100} step={1}
+                value={infillDensity}
+                onChange={e => setInfillDensity(+e.target.value)}
+                className="flex-1 accent-primary"
+              />
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={0} max={100} step={1}
+                  value={infillDensity}
+                  onChange={e => {
+                    const v = Math.min(100, Math.max(0, +e.target.value))
+                    setInfillDensity(isNaN(v) ? 15 : v)
+                  }}
+                  className="input w-16 text-center"
+                />
+                <span className="text-xs text-gray-500">%</span>
+              </div>
+            </div>
+            <div className="flex justify-between text-xs text-gray-600 mt-0.5">
+              <span>0%</span><span>50%</span><span>100%</span>
+            </div>
+          </Field>
           <Field label="Pattern">
             <select className="input" value={infillPattern} onChange={e => setInfillPattern(e.target.value as InfillPattern)}>
               <option value="grid">Grid</option>

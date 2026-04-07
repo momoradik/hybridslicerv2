@@ -25,4 +25,8 @@
     <ProjectReference Include="..\HybridSlicer.Application\HybridSlicer.Application.csproj" />
     <ProjectReference Include="..\HybridSlicer.Infrastructure\HybridSlicer.Infrastructure.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Content Update="wwwroot\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

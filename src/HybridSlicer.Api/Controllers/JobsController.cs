@@ -51,7 +51,8 @@ public sealed class JobsController : ControllerBase
             SupportEnabled: request.SupportEnabled,
             SupportType: request.SupportType,
             SupportPlacement: request.SupportPlacement,
-            InfillPattern: request.InfillPattern), ct);
+            InfillPattern: request.InfillPattern,
+            InfillDensityPct: request.InfillDensityPct), ct);
 
         return CreatedAtAction(nameof(GetById), new { id = result.JobId }, result);
     }
@@ -93,6 +94,17 @@ public sealed class JobsController : ControllerBase
         return Accepted(result);
     }
 
+    [HttpGet("{id:guid}/toolpath-gcode")]
+    public async Task<IActionResult> GetToolpathGCode(Guid id, CancellationToken ct)
+    {
+        var job = await _jobs.GetByIdAsync(id, ct);
+        if (job is null) return NotFound();
+        if (job.ToolpathGCodePath is null) return BadRequest("Toolpath G-code not yet generated.");
+        if (!System.IO.File.Exists(job.ToolpathGCodePath)) return NotFound("Toolpath G-code file not found on disk.");
+        var stream = System.IO.File.OpenRead(job.ToolpathGCodePath);
+        return File(stream, "text/plain");
+    }
+
     [HttpGet("{id:guid}/print-gcode")]
     public async Task<IActionResult> GetPrintGCode(Guid id, CancellationToken ct)
     {
@@ -117,9 +129,22 @@ public sealed class JobsController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
-    public IActionResult Delete(Guid id) =>
-        // Soft-delete in full implementation
-        NoContent();
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    {
+        var job = await _jobs.GetByIdAsync(id, ct);
+        if (job is null) return NotFound();
+
+        // Delete all files in the job directory (STL + all generated G-code)
+        var jobDir = Path.GetDirectoryName(job.StlFilePath);
+        if (jobDir is not null && Directory.Exists(jobDir))
+        {
+            try { Directory.Delete(jobDir, recursive: true); }
+            catch { /* best-effort */ }
+        }
+
+        await _jobs.DeleteAsync(id, ct);
+        return NoContent();
+    }
 }
 
 public record UploadStlRequest(
@@ -131,7 +156,8 @@ public record UploadStlRequest(
     [FromForm] bool SupportEnabled = false,
     [FromForm] string SupportType = "normal",
     [FromForm] string SupportPlacement = "everywhere",
-    [FromForm] string InfillPattern = "grid");
+    [FromForm] string InfillPattern = "grid",
+    [FromForm] double? InfillDensityPct = 15);
 
 public record CreateJobRequest(string JobName, Guid MachineProfileId, Guid PrintProfileId, Guid MaterialId);
 public record GenerateToolpathsRequest(Guid CncToolId, int MachineEveryNLayers);

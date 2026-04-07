@@ -31,4 +31,14 @@ public sealed class PrintJobRepository : IPrintJobRepository
         _db.PrintJobs.Update(job);
         await _db.SaveChangesAsync(ct);
     }
+
+    public async Task DeleteAsync(Guid id, CancellationToken ct = default)
+    {
+        var job = await _db.PrintJobs.FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (job is not null)
+        {
+            _db.PrintJobs.Remove(job);
+            await _db.SaveChangesAsync(ct);
+        }
+    }
 }

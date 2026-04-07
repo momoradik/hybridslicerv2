@@ -141,7 +141,14 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         sb.Append($" -s speed_infill={p.InfillSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s speed_wall={p.WallSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s speed_layer_0={p.FirstLayerSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s infill_sparse_density={p.InfillDensityPct.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        // Infill density — set both the percentage AND the derived line-distance so CuraEngine 5.x
+        // cannot fall back to a cached formula value from the definition file.
+        // infill_line_distance = (line_width * 100) / infill_sparse_density  (Cura's own formula)
+        var infillLineDist = p.InfillDensityPct > 0
+            ? (p.LineWidthMm * 100.0) / p.InfillDensityPct
+            : 0.0;
+        sb.Append($" -s infill_sparse_density={p.InfillDensityPct.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s infill_line_distance={infillLineDist.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s infill_pattern={p.InfillPattern}");
         sb.Append($" -s material_print_temperature={p.PrintTemperatureDegC}");
         sb.Append($" -s material_bed_temperature={p.BedTemperatureDegC}");
@@ -170,6 +177,11 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         sb.Append(" -e0");
         if (!string.IsNullOrWhiteSpace(extruderDefinitionsPath) && File.Exists(extruderDefinitionsPath))
             sb.Append($" -j \"{extruderDefinitionsPath}\"");
+        // Repeat infill settings at extruder level — CuraEngine 5.x resolves some settings
+        // per-extruder and will ignore the global value if the extruder context is missing them.
+        sb.Append($" -s infill_sparse_density={p.InfillDensityPct.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s infill_line_distance={infillLineDist.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s infill_pattern={p.InfillPattern}");
         sb.Append($" -s material_diameter={p.FilamentDiameterMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s machine_nozzle_size={p.NozzleDiameterMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s retraction_amount={p.RetractLengthMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");

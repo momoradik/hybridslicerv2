@@ -71,7 +71,8 @@ public sealed class ImportStlHandler : IRequestHandler<ImportStlCommand, ImportS
             cmd.SupportEnabled,
             cmd.SupportType,
             cmd.SupportPlacement,
-            cmd.InfillPattern);
+            cmd.InfillPattern,
+            cmd.InfillDensityPct);
 
         await _jobs.AddAsync(job, ct);
 

@@ -10,4 +10,5 @@ public interface IPrintJobRepository
     Task<IReadOnlyList<PrintJob>> GetByStatusAsync(JobStatus status, CancellationToken ct = default);
     Task AddAsync(PrintJob job, CancellationToken ct = default);
     Task UpdateAsync(PrintJob job, CancellationToken ct = default);
+    Task DeleteAsync(Guid id, CancellationToken ct = default);
 }

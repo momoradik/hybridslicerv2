@@ -25,9 +25,11 @@ public class PrintJob
     public string SupportType { get; private set; } = "normal";
     public string SupportPlacement { get; private set; } = "everywhere";
     public string InfillPattern { get; private set; } = "grid";
+    public double? InfillDensityPct { get; private set; }
 
     // Generated artefact paths (relative to job storage root)
     public string? PrintGCodePath { get; private set; }
+    public string? ToolpathGCodePath { get; private set; }
     public string? HybridGCodePath { get; private set; }
 
     // Slicing metadata
@@ -51,7 +53,8 @@ public class PrintJob
         bool supportEnabled = false,
         string supportType = "normal",
         string supportPlacement = "everywhere",
-        string infillPattern = "grid")
+        string infillPattern = "grid",
+        double? infillDensityPct = null)
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new DomainException("INVALID_NAME", "Job name must not be empty.");
@@ -71,6 +74,7 @@ public class PrintJob
             SupportType = string.IsNullOrWhiteSpace(supportType) ? "normal" : supportType,
             SupportPlacement = string.IsNullOrWhiteSpace(supportPlacement) ? "everywhere" : supportPlacement,
             InfillPattern = string.IsNullOrWhiteSpace(infillPattern) ? "grid" : infillPattern,
+            InfillDensityPct = infillDensityPct is > 0 and <= 100 ? infillDensityPct : null,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -99,14 +103,15 @@ public class PrintJob
 
     public void MarkGeneratingToolpaths()
     {
-        AssertStatus(JobStatus.SlicingComplete);
+        AssertStatus(JobStatus.SlicingComplete, JobStatus.ToolpathsComplete);
         Status = JobStatus.GeneratingToolpaths;
         Touch();
     }
 
-    public void MarkToolpathsComplete()
+    public void MarkToolpathsComplete(string toolpathGCodePath)
     {
         AssertStatus(JobStatus.GeneratingToolpaths);
+        ToolpathGCodePath = toolpathGCodePath;
         Status = JobStatus.ToolpathsComplete;
         Touch();
     }

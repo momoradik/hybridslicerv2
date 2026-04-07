@@ -60,7 +60,7 @@ public class PrintJobTests
         job.MarkSlicing();
         job.MarkSlicingComplete("/print.gcode", 200);
         job.MarkGeneratingToolpaths();
-        job.MarkToolpathsComplete();
+        job.MarkToolpathsComplete("/toolpath.gcode");
         job.MarkPlanningHybrid();
         job.MarkReady("/hybrid.gcode");
 

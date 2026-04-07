@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { jobsApi } from '../api/client'
 import type { JobStatus } from '../types'
@@ -19,10 +19,16 @@ const STATUS_COLOR: Record<JobStatus, string> = {
 }
 
 export default function Dashboard() {
+  const qc = useQueryClient()
   const { data: jobs = [], isLoading } = useQuery({
     queryKey: ['jobs'],
     queryFn: jobsApi.getAll,
     refetchInterval: 3000,
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => jobsApi.deleteJob(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
   })
 
   return (
@@ -48,19 +54,32 @@ export default function Dashboard() {
         <div className="grid gap-4">
           {jobs.map(job => (
             <div key={job.id} className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between">
-              <div>
-                <p className="font-medium text-white">{job.name}</p>
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-white truncate">{job.name}</p>
                 <p className="text-xs text-gray-500 mt-0.5">
                   {new Date(job.createdAt).toLocaleString()}
                   {job.totalPrintLayers !== undefined && ` · ${job.totalPrintLayers} layers`}
                 </p>
                 {job.errorMessage && (
-                  <p className="text-xs text-red-400 mt-0.5">{job.errorMessage}</p>
+                  <p className="text-xs text-red-400 mt-0.5 truncate">{job.errorMessage}</p>
                 )}
               </div>
-              <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${STATUS_COLOR[job.status]}`}>
-                {job.status}
-              </span>
+              <div className="flex items-center gap-3 flex-shrink-0 ml-4">
+                <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${STATUS_COLOR[job.status]}`}>
+                  {job.status}
+                </span>
+                <button
+                  onClick={() => {
+                    if (confirm(`Delete "${job.name}"?\n\nThis will permanently remove the job and all generated files (STL, G-code).`))
+                      deleteMutation.mutate(job.id)
+                  }}
+                  disabled={deleteMutation.isPending}
+                  className="px-2.5 py-1 rounded-lg text-xs bg-gray-800 hover:bg-red-900/60 border border-gray-700 hover:border-red-700 text-gray-400 hover:text-red-300 transition disabled:opacity-40"
+                  title="Delete job and all generated files"
+                >
+                  Delete
+                </button>
+              </div>
             </div>
           ))}
         </div>
