@@ -43,7 +43,15 @@ public sealed record WallPathsRequest(
     double SafeClearanceHeightMm,
     /// <summary>True = outer wall (offset outward). False = inner wall (offset inward).</summary>
     bool IsOuterWall = true,
-    bool ClimbMilling = true);
+    bool ClimbMilling = true,
+    /// <summary>
+    /// Optional support path segments for this layer.
+    /// When non-empty, they are buffered by <see cref="SupportClearanceMm"/> and
+    /// subtracted from the milling area so the tool never enters support regions.
+    /// </summary>
+    IReadOnlyList<IReadOnlyList<(double X, double Y)>>? SupportPaths = null,
+    /// <summary>XY clearance (mm) added around each support region as a forbidden zone.</summary>
+    double SupportClearanceMm = 2.0);
 
 public sealed record ToolpathRequest(
     string StlFilePath,

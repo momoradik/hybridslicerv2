@@ -91,7 +91,7 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
         gcodeBuilder.AppendLine($"; Tool     : {tool.Name}  Ø{tool.DiameterMm} mm  Feed: {tool.RecommendedFeedMmPerMin} mm/min  RPM: {tool.RecommendedRpm}");
         gcodeBuilder.AppendLine($"; Nozzle   : Ø{profile.LineWidthMm} mm  Layer height: {profile.LayerHeightMm} mm");
         gcodeBuilder.AppendLine($"; Interval : every {cmd.MachineEveryNLayers} layer(s)  Axial depth: {axialDepthMm:F3} mm");
-        gcodeBuilder.AppendLine($"; Options  : MachineInnerWalls={cmd.MachineInnerWalls}  AvoidSupports={cmd.AvoidSupports}");
+        gcodeBuilder.AppendLine($"; Options  : MachineInnerWalls={cmd.MachineInnerWalls}  AvoidSupports={cmd.AvoidSupports}  SupportClearance={cmd.SupportClearanceMm:F2} mm");
         gcodeBuilder.AppendLine($"; CRC      : offset = tool_radius({tool.DiameterMm / 2:F3}) + nozzle_radius({profile.LineWidthMm / 2:F3}) = {(tool.DiameterMm + profile.LineWidthMm) / 2:F3} mm outward");
         gcodeBuilder.AppendLine($"; Source   : Cura WALL-OUTER paths (parsed from print.gcode)");
         gcodeBuilder.AppendLine($"; Generated: {DateTime.UtcNow:u}");
@@ -119,15 +119,16 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                     continue;
                 }
 
-                // Support avoidance: skip this CNC step if the layer has active supports
-                if (cmd.AvoidSupports && layerData.SupportPaths.Count > 0)
-                {
-                    gcodeBuilder.AppendLine(
-                        $"; Layer {layer} (Z={zHeight:F3} mm) — support detected, CNC skipped (AvoidSupports=true)");
-                    gcodeBuilder.AppendLine();
-                    _logger.LogInformation("Layer {L}: support detected, skipping CNC (AvoidSupports)", layer);
-                    continue;
-                }
+                // Support avoidance: note detected supports; they will be passed as forbidden
+                // zones to the planner, which clips toolpaths around them (no layer skip).
+                var supportPaths = (cmd.AvoidSupports && layerData.SupportPaths.Count > 0)
+                    ? layerData.SupportPaths
+                    : null;
+
+                if (supportPaths is not null)
+                    _logger.LogInformation(
+                        "Layer {L}: {S} support segment(s) detected — will clip toolpaths with {C} mm clearance",
+                        layer, supportPaths.Count, cmd.SupportClearanceMm);
 
                 // Collect wall paths to machine
                 var wallPaths = new List<IReadOnlyList<(double X, double Y)>>(
@@ -155,7 +156,9 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                     MachineOffset:          machine.CncOffset,
                     SafeClearanceHeightMm:  machine.SafeClearanceHeightMm,
                     IsOuterWall:            true,
-                    ClimbMilling:           true);
+                    ClimbMilling:           true,
+                    SupportPaths:           supportPaths,
+                    SupportClearanceMm:     cmd.SupportClearanceMm);
 
                 var toolpath = await _planner.PlanFromWallPathsAsync(outerRequest, ct);
 

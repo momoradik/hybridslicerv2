@@ -39,9 +39,11 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
     private ToolpathResult PlanFromWallPathsCore(WallPathsRequest request)
     {
         _logger.LogDebug(
-            "PlanFromWallPaths Z={Z} mm  tool Ø{D} mm  nozzle Ø{N} mm  {Count} path segments",
+            "PlanFromWallPaths Z={Z} mm  tool Ø{D} mm  nozzle Ø{N} mm  {Count} wall segments  {S} support segments  clearance={C} mm",
             request.ZHeightMm, request.ToolDiameterMm, request.NozzleDiameterMm,
-            request.WallPaths.Count);
+            request.WallPaths.Count,
+            request.SupportPaths?.Count ?? 0,
+            request.SupportClearanceMm);
 
         if (request.WallPaths.Count == 0)
             return new ToolpathResult(string.Empty, true, []);
@@ -61,11 +63,39 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
         var zCut  = request.ZHeightMm + dz;
         var zSafe = request.SafeClearanceHeightMm + request.ZHeightMm + dz;
 
+        // ── Build support forbidden zone (buffered union of all support paths) ──────
+        // Each support segment is buffered by (tool_radius + clearance) so the tool
+        // centre never gets closer than clearanceMm to any support boundary.
+        Geometry? forbiddenZone = null;
+        if (request.SupportPaths is { Count: > 0 })
+        {
+            var supportBuffer = toolRadius + request.SupportClearanceMm;
+            foreach (var seg in request.SupportPaths)
+            {
+                if (seg.Count < 2) continue;
+                var geom = BuildGeometry(seg);
+                if (geom is null || geom.IsEmpty) continue;
+                try
+                {
+                    var buffered = geom.Buffer(supportBuffer, 16);
+                    forbiddenZone = forbiddenZone is null
+                        ? buffered
+                        : forbiddenZone.Union(buffered);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Support buffer failed at Z={Z}, segment skipped", request.ZHeightMm);
+                }
+            }
+
+            if (forbiddenZone is not null)
+                _logger.LogDebug("Forbidden zone built: {Area:F1} mm² at Z={Z}", forbiddenZone.Area, request.ZHeightMm);
+        }
+
         var gcodeBuilder = new StringBuilder();
         var allBounds    = new List<BoundingBox2D>();
 
-        // Process each path segment independently
-        // Each segment is a connected sequence of G1 extrusion moves from Cura
+        // Process each wall path segment independently
         foreach (var seg in request.WallPaths)
         {
             if (seg.Count < 2) continue;
@@ -82,13 +112,32 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Buffer failed for segment at Z={Z}, skipping", request.ZHeightMm);
+                _logger.LogWarning(ex, "CRC buffer failed for segment at Z={Z}, skipping", request.ZHeightMm);
                 continue;
             }
 
             if (compensated is null || compensated.IsEmpty) continue;
 
-            // Extract exterior ring(s) from the buffered geometry
+            // Subtract support forbidden zone from milling area
+            if (forbiddenZone is not null)
+            {
+                try
+                {
+                    compensated = compensated.Difference(forbiddenZone);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Support difference failed at Z={Z}, using full area", request.ZHeightMm);
+                }
+
+                if (compensated is null || compensated.IsEmpty)
+                {
+                    _logger.LogDebug("Segment at Z={Z} fully inside forbidden zone — skipped", request.ZHeightMm);
+                    continue;
+                }
+            }
+
+            // Extract exterior ring(s) from the valid milling geometry
             var rings = ExtractRings(compensated);
             foreach (var ring in rings)
             {

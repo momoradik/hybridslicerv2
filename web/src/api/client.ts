@@ -49,12 +49,14 @@ export const jobsApi = {
   generateToolpaths: (
     id: string, toolId: string, machineEveryN: number,
     machineInnerWalls = false, avoidSupports = false,
+    supportClearanceMm = 2.0,
   ) =>
     http.post(`/jobs/${id}/generate-toolpaths`, {
       cncToolId: toolId,
       machineEveryNLayers: machineEveryN,
       machineInnerWalls,
       avoidSupports,
+      supportClearanceMm,
     }).then(r => r.data),
 
   planHybrid: (id: string, machineEveryN: number) =>

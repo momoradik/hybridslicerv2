@@ -13,8 +13,9 @@ export default function HybridPlanner() {
   const [jobId,             setJobId]             = useState('')
   const [toolId,            setToolId]            = useState('')
   const [machineEveryN,     setMachineEveryN]     = useState(10)
-  const [machineInnerWalls, setMachineInnerWalls] = useState(false)
-  const [avoidSupports,     setAvoidSupports]     = useState(false)
+  const [machineInnerWalls,   setMachineInnerWalls]   = useState(false)
+  const [avoidSupports,       setAvoidSupports]       = useState(false)
+  const [supportClearanceMm,  setSupportClearanceMm]  = useState(2.0)
   const [activeTab,         setActiveTab]         = useState<Tab>('config')
   const [toolpathGCode,     setToolpathGCode]     = useState<string | null>(null)
   const [machinedLayers,    setMachinedLayers]    = useState<number[]>([])
@@ -24,7 +25,7 @@ export default function HybridPlanner() {
 
   const toolpathsMutation = useMutation({
     mutationFn: () =>
-      jobsApi.generateToolpaths(jobId, toolId, machineEveryN, machineInnerWalls, avoidSupports),
+      jobsApi.generateToolpaths(jobId, toolId, machineEveryN, machineInnerWalls, avoidSupports, supportClearanceMm),
     onSuccess: async (result: any) => {
       qc.invalidateQueries({ queryKey: ['jobs'] })
       if (result?.machinedAtLayers) setMachinedLayers(result.machinedAtLayers)
@@ -155,9 +156,24 @@ export default function HybridPlanner() {
                 />
                 <div>
                   <div className="text-sm text-gray-200">Avoid supports</div>
-                  <div className="text-xs text-gray-500">Skip CNC at layers where support structures are active</div>
+                  <div className="text-xs text-gray-500">Clip toolpaths around support regions (no-cut zones)</div>
                 </div>
               </label>
+
+              {avoidSupports && (
+                <div className="ml-7 flex items-center gap-3">
+                  <label className="text-xs text-gray-400 whitespace-nowrap">Support XY clearance</label>
+                  <input
+                    type="number"
+                    min={0.1} max={20} step={0.1}
+                    value={supportClearanceMm}
+                    onChange={e => setSupportClearanceMm(Math.max(0.1, Math.min(20, +e.target.value)))}
+                    className="input w-20 text-center"
+                  />
+                  <span className="text-xs text-gray-500">mm</span>
+                  <span className="text-xs text-gray-600">(tool stays this far from supports)</span>
+                </div>
+              )}
             </div>
 
             <div className="flex gap-3 pt-2">

@@ -84,7 +84,8 @@ public sealed class JobsController : ControllerBase
                 request.CncToolId,
                 request.MachineEveryNLayers,
                 request.MachineInnerWalls,
-                request.AvoidSupports), ct);
+                request.AvoidSupports,
+                request.SupportClearanceMm), ct);
         return Accepted(result);
     }
 
@@ -166,8 +167,9 @@ public record UploadStlRequest(
 
 public record CreateJobRequest(string JobName, Guid MachineProfileId, Guid PrintProfileId, Guid MaterialId);
 public record GenerateToolpathsRequest(
-    Guid CncToolId,
-    int  MachineEveryNLayers,
-    bool MachineInnerWalls = false,
-    bool AvoidSupports     = false);
+    Guid   CncToolId,
+    int    MachineEveryNLayers,
+    bool   MachineInnerWalls    = false,
+    bool   AvoidSupports        = false,
+    double SupportClearanceMm   = 2.0);
 public record PlanHybridRequest(int MachineEveryNLayers);
