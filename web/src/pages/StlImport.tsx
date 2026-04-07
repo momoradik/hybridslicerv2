@@ -449,6 +449,7 @@ export default function StlImport() {
     setPreviewError(null)
     setPreviewGCode(null)
     const fp = currentFingerprint
+    let previewJobId: string | null = null
     try {
       const fd = new FormData()
       const transformedFile = await buildTransformedStlBlob(primary.file, primary.transform)
@@ -463,6 +464,7 @@ export default function StlImport() {
       fd.append('infillPattern', infillPattern)
       fd.append('infillDensityPct', infillDensity.toString())
       const { jobId } = await jobsApi.uploadStl(fd)
+      previewJobId = jobId
       await jobsApi.slice(jobId)
       const gcode = await jobsApi.getPrintGCode(jobId)
       previewFingerprintRef.current = fp
@@ -475,6 +477,7 @@ export default function StlImport() {
       setPreviewError(msg)
     } finally {
       setIsPreviewLoading(false)
+      if (previewJobId) jobsApi.deleteJob(previewJobId).catch(() => {})
     }
   }
 
@@ -1114,7 +1117,7 @@ export default function StlImport() {
             className="flex-1 py-2.5 bg-gray-700/80 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed
                        text-white rounded-lg font-medium transition-colors border border-gray-600"
           >
-            {isPreviewLoading ? 'Slicing…' : 'Preview'}
+            {isPreviewLoading ? 'Slicing…' : 'Slice'}
           </button>
           <button
             onClick={handleSubmit}

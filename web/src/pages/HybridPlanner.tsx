@@ -2,8 +2,9 @@ import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { jobsApi, toolsApi } from '../api/client'
 import GCodePreview3D from '../components/viewer/GCodePreview3D'
+import CncSimulation from '../components/viewer/CncSimulation'
 
-type Tab = 'config' | 'gcode' | 'preview3d'
+type Tab = 'config' | 'gcode' | 'preview3d' | 'simulation'
 
 export default function HybridPlanner() {
   const qc = useQueryClient()
@@ -18,6 +19,7 @@ export default function HybridPlanner() {
   const [supportClearanceMm,  setSupportClearanceMm]  = useState(2.0)
   const [activeTab,         setActiveTab]         = useState<Tab>('config')
   const [toolpathGCode,     setToolpathGCode]     = useState<string | null>(null)
+  const [printGCode,        setPrintGCode]        = useState<string | null>(null)
   const [machinedLayers,    setMachinedLayers]    = useState<number[]>([])
 
   const readyJobs  = jobs.filter(j => j.status === 'SlicingComplete' || j.status === 'ToolpathsComplete')
@@ -31,6 +33,8 @@ export default function HybridPlanner() {
       if (result?.machinedAtLayers) setMachinedLayers(result.machinedAtLayers)
       const gcode = await jobsApi.getToolpathGCode(jobId)
       setToolpathGCode(gcode)
+      const pg = await jobsApi.getPrintGCode(jobId)
+      setPrintGCode(pg)
       setActiveTab('gcode')
     },
   })
@@ -80,6 +84,16 @@ export default function HybridPlanner() {
           3D Preview
           {toolpathGCode && (
             <span className="ml-2 px-1.5 py-0.5 text-xs bg-cyan-700 rounded-full">NEW</span>
+          )}
+        </TabBtn>
+        <TabBtn
+          active={activeTab === 'simulation'}
+          disabled={!toolpathGCode || !printGCode}
+          onClick={() => setActiveTab('simulation')}
+        >
+          Simulation
+          {toolpathGCode && printGCode && (
+            <span className="ml-2 px-1.5 py-0.5 text-xs bg-green-700 rounded-full">SIM</span>
           )}
         </TabBtn>
       </div>
@@ -289,6 +303,16 @@ export default function HybridPlanner() {
             />
           </div>
         </div>
+      )}
+
+      {activeTab === 'simulation' && toolpathGCode && printGCode && (
+        <CncSimulation
+          toolpathGCode={toolpathGCode}
+          printGCode={printGCode}
+          buildVolume={buildVolume}
+          toolDiameterMm={tools.find(t => t.id === toolId)?.diameterMm ?? 3}
+          className="flex-1"
+        />
       )}
     </div>
   )
