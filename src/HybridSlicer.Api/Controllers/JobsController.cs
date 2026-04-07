@@ -79,7 +79,12 @@ public sealed class JobsController : ControllerBase
         CancellationToken ct)
     {
         var result = await _mediator.Send(
-            new GenerateToolpathsCommand(id, request.CncToolId, request.MachineEveryNLayers), ct);
+            new GenerateToolpathsCommand(
+                id,
+                request.CncToolId,
+                request.MachineEveryNLayers,
+                request.MachineInnerWalls,
+                request.AvoidSupports), ct);
         return Accepted(result);
     }
 
@@ -160,5 +165,9 @@ public record UploadStlRequest(
     [FromForm] double? InfillDensityPct = 15);
 
 public record CreateJobRequest(string JobName, Guid MachineProfileId, Guid PrintProfileId, Guid MaterialId);
-public record GenerateToolpathsRequest(Guid CncToolId, int MachineEveryNLayers);
+public record GenerateToolpathsRequest(
+    Guid CncToolId,
+    int  MachineEveryNLayers,
+    bool MachineInnerWalls = false,
+    bool AvoidSupports     = false);
 public record PlanHybridRequest(int MachineEveryNLayers);

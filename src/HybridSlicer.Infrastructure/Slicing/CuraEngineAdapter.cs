@@ -102,7 +102,11 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         if (!File.Exists(gcodePath))
             throw new SlicingException("CuraEngine reported success but produced no G-code file.");
 
-        var (totalLayers, timeSec, filamentMm) = ParseSummary(allOutput);
+        // ParseSummary reads process stdout/stderr.  Layer count and time metadata are
+        // emitted inside the G-code file itself (not on stdout), so supplement with a
+        // scan of the first ~200 lines of the output file where Cura writes ;LAYER_COUNT.
+        var gcodeHeader = ReadFirstLines(gcodePath, 200);
+        var (totalLayers, timeSec, filamentMm) = ParseSummary(allOutput + "\n" + gcodeHeader);
         _logger.LogInformation("Sliced: {Layers} layers, {Time:F0}s, {Fil:F0} mm filament",
             totalLayers, timeSec, filamentMm);
 
@@ -203,6 +207,19 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         sb.Append($" -l \"{Path.GetFileName(stlPath)}\"");
         sb.Append($" -o \"{Path.GetFileName(gcodePath)}\"");
 
+        return sb.ToString();
+    }
+
+    private static string ReadFirstLines(string path, int maxLines)
+    {
+        var sb = new StringBuilder();
+        using var sr = new StreamReader(path, Encoding.UTF8);
+        for (var i = 0; i < maxLines; i++)
+        {
+            var line = sr.ReadLine();
+            if (line is null) break;
+            sb.AppendLine(line);
+        }
         return sb.ToString();
     }
 

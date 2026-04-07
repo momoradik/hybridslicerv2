@@ -9,14 +9,41 @@ namespace HybridSlicer.Application.Interfaces;
 public interface IToolpathPlanner
 {
     /// <summary>
-    /// Generates a contour-milling toolpath for the given STL cross-section
-    /// at the specified Z height, applying cutter-radius compensation and
-    /// machine offsets.
+    /// Generates a contour-milling toolpath from Cura-extracted wall paths.
+    /// This is the primary method — it uses the actual outer-wall G-code paths
+    /// that Cura computed, applying tool-radius compensation and machine offsets.
+    /// </summary>
+    Task<ToolpathResult> PlanFromWallPathsAsync(
+        WallPathsRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Fallback: generates a contour-milling toolpath by slicing the STL at Z.
+    /// Used only when no print G-code is available.
     /// </summary>
     Task<ToolpathResult> PlanContourAsync(
         ToolpathRequest request,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// Request to generate a CNC toolpath from pre-extracted Cura wall paths.
+/// Correct CRC formula: CNC offset = tool_radius + nozzle_radius (outward for outer wall).
+/// </summary>
+public sealed record WallPathsRequest(
+    /// <summary>Per-segment ordered XY points extracted from Cura wall G-code.</summary>
+    IReadOnlyList<IReadOnlyList<(double X, double Y)>> WallPaths,
+    double ZHeightMm,
+    double ToolDiameterMm,
+    /// <summary>Nozzle/line width — used for cutter-radius compensation offset.</summary>
+    double NozzleDiameterMm,
+    double FeedRateMmPerMin,
+    int SpindleRpm,
+    MachineOffset MachineOffset,
+    double SafeClearanceHeightMm,
+    /// <summary>True = outer wall (offset outward). False = inner wall (offset inward).</summary>
+    bool IsOuterWall = true,
+    bool ClimbMilling = true);
 
 public sealed record ToolpathRequest(
     string StlFilePath,

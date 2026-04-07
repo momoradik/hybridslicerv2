@@ -46,8 +46,16 @@ export const jobsApi = {
 
   slice: (id: string) => http.post(`/jobs/${id}/slice`).then(r => r.data),
 
-  generateToolpaths: (id: string, toolId: string, machineEveryN: number) =>
-    http.post(`/jobs/${id}/generate-toolpaths`, { cncToolId: toolId, machineEveryNLayers: machineEveryN }).then(r => r.data),
+  generateToolpaths: (
+    id: string, toolId: string, machineEveryN: number,
+    machineInnerWalls = false, avoidSupports = false,
+  ) =>
+    http.post(`/jobs/${id}/generate-toolpaths`, {
+      cncToolId: toolId,
+      machineEveryNLayers: machineEveryN,
+      machineInnerWalls,
+      avoidSupports,
+    }).then(r => r.data),
 
   planHybrid: (id: string, machineEveryN: number) =>
     http.post(`/jobs/${id}/plan-hybrid`, { machineEveryNLayers: machineEveryN }).then(r => r.data),

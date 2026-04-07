@@ -61,10 +61,15 @@ public sealed class CollisionSafetyValidator : ISafetyValidator
         {
             status = SafetyStatus.Clear;
         }
-        else if (issues.Any(i => i.Contains("envelope") || i.Contains("intersects")))
+        else if (issues.Any(i => i.Contains("intersects")))
         {
             status = SafetyStatus.Blocked;
             _logger.LogWarning("Safety BLOCKED for toolpath: {Count} issues", issues.Count);
+        }
+        else if (issues.Any(i => i.Contains("envelope")))
+        {
+            status = SafetyStatus.Warning;
+            _logger.LogWarning("Safety WARNING (envelope) for toolpath: {Count} issues", issues.Count);
         }
         else
         {

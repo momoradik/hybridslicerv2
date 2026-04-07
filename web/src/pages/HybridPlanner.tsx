@@ -1,26 +1,30 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { jobsApi, toolsApi } from '../api/client'
+import GCodePreview3D from '../components/viewer/GCodePreview3D'
 
-type Tab = 'config' | 'gcode'
+type Tab = 'config' | 'gcode' | 'preview3d'
 
 export default function HybridPlanner() {
   const qc = useQueryClient()
-  const { data: jobs = [] } = useQuery({ queryKey: ['jobs'], queryFn: jobsApi.getAll })
+  const { data: jobs  = [] } = useQuery({ queryKey: ['jobs'],  queryFn: jobsApi.getAll })
   const { data: tools = [] } = useQuery({ queryKey: ['tools'], queryFn: toolsApi.getAll })
 
-  const [jobId, setJobId] = useState('')
-  const [toolId, setToolId] = useState('')
-  const [machineEveryN, setMachineEveryN] = useState(10)
-  const [activeTab, setActiveTab] = useState<Tab>('config')
-  const [toolpathGCode, setToolpathGCode] = useState<string | null>(null)
-  const [machinedLayers, setMachinedLayers] = useState<number[]>([])
+  const [jobId,             setJobId]             = useState('')
+  const [toolId,            setToolId]            = useState('')
+  const [machineEveryN,     setMachineEveryN]     = useState(10)
+  const [machineInnerWalls, setMachineInnerWalls] = useState(false)
+  const [avoidSupports,     setAvoidSupports]     = useState(false)
+  const [activeTab,         setActiveTab]         = useState<Tab>('config')
+  const [toolpathGCode,     setToolpathGCode]     = useState<string | null>(null)
+  const [machinedLayers,    setMachinedLayers]    = useState<number[]>([])
 
-  const readyJobs = jobs.filter(j => j.status === 'SlicingComplete' || j.status === 'ToolpathsComplete')
+  const readyJobs  = jobs.filter(j => j.status === 'SlicingComplete' || j.status === 'ToolpathsComplete')
   const selectedJob = jobs.find(j => j.id === jobId)
 
   const toolpathsMutation = useMutation({
-    mutationFn: () => jobsApi.generateToolpaths(jobId, toolId, machineEveryN),
+    mutationFn: () =>
+      jobsApi.generateToolpaths(jobId, toolId, machineEveryN, machineInnerWalls, avoidSupports),
     onSuccess: async (result: any) => {
       qc.invalidateQueries({ queryKey: ['jobs'] })
       if (result?.machinedAtLayers) setMachinedLayers(result.machinedAtLayers)
@@ -37,13 +41,16 @@ export default function HybridPlanner() {
 
   const downloadGCode = async () => {
     const blob = await jobsApi.downloadGCode(jobId)
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href     = url
     a.download = `hybrid_${jobId}.gcode`
     a.click()
     URL.revokeObjectURL(url)
   }
+
+  // Dummy build volume for the 3D preview (CNC toolpaths don't need a real bed size)
+  const buildVolume = useMemo(() => ({ width: 440, depth: 290, height: 350 }), [])
 
   return (
     <div className="space-y-6">
@@ -59,9 +66,19 @@ export default function HybridPlanner() {
           disabled={!toolpathGCode}
           onClick={() => setActiveTab('gcode')}
         >
-          G-code Preview
+          G-code Text
           {toolpathGCode && (
             <span className="ml-2 px-1.5 py-0.5 text-xs bg-purple-700 rounded-full">CNC</span>
+          )}
+        </TabBtn>
+        <TabBtn
+          active={activeTab === 'preview3d'}
+          disabled={!toolpathGCode}
+          onClick={() => setActiveTab('preview3d')}
+        >
+          3D Preview
+          {toolpathGCode && (
+            <span className="ml-2 px-1.5 py-0.5 text-xs bg-cyan-700 rounded-full">NEW</span>
           )}
         </TabBtn>
       </div>
@@ -91,17 +108,57 @@ export default function HybridPlanner() {
             </Field>
 
             <Field label={`Machine every N layers (N = ${machineEveryN})`}>
-              <input
-                type="range"
-                min={1} max={100} step={1}
-                value={machineEveryN}
-                onChange={e => setMachineEveryN(+e.target.value)}
-                className="w-full accent-primary"
-              />
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={1} max={100} step={1}
+                  value={machineEveryN}
+                  onChange={e => setMachineEveryN(+e.target.value)}
+                  className="flex-1 accent-primary"
+                />
+                <input
+                  type="number"
+                  min={1} max={100}
+                  value={machineEveryN}
+                  onChange={e => setMachineEveryN(Math.max(1, Math.min(100, +e.target.value)))}
+                  className="input w-16 text-center"
+                />
+              </div>
               <div className="flex justify-between text-xs text-gray-500 mt-1">
                 <span>Every layer</span><span>Every 100 layers</span>
               </div>
             </Field>
+
+            {/* CNC options */}
+            <div className="space-y-3 border border-gray-700 rounded-lg p-4">
+              <p className="text-xs text-gray-400 font-medium uppercase tracking-wide">CNC Options</p>
+
+              <label className="flex items-center gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={machineInnerWalls}
+                  onChange={e => setMachineInnerWalls(e.target.checked)}
+                  className="w-4 h-4 accent-purple-500"
+                />
+                <div>
+                  <div className="text-sm text-gray-200">Machine inner surfaces</div>
+                  <div className="text-xs text-gray-500">Also run CNC on inner-wall paths (holes, pockets)</div>
+                </div>
+              </label>
+
+              <label className="flex items-center gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={avoidSupports}
+                  onChange={e => setAvoidSupports(e.target.checked)}
+                  className="w-4 h-4 accent-purple-500"
+                />
+                <div>
+                  <div className="text-sm text-gray-200">Avoid supports</div>
+                  <div className="text-xs text-gray-500">Skip CNC at layers where support structures are active</div>
+                </div>
+              </label>
+            </div>
 
             <div className="flex gap-3 pt-2">
               <button
@@ -121,6 +178,14 @@ export default function HybridPlanner() {
               </button>
             </div>
 
+            {toolpathsMutation.isError && (
+              <div className="bg-red-950/40 border border-red-800 rounded-lg px-3 py-2 text-xs text-red-400">
+                {(toolpathsMutation.error as any)?.response?.data?.detail
+                  ?? (toolpathsMutation.error as Error)?.message
+                  ?? 'Toolpath generation failed'}
+              </div>
+            )}
+
             {selectedJob?.status === 'Ready' && (
               <button
                 onClick={downloadGCode}
@@ -131,12 +196,20 @@ export default function HybridPlanner() {
             )}
 
             {toolpathsMutation.isSuccess && toolpathGCode && (
-              <button
-                onClick={() => setActiveTab('gcode')}
-                className="w-full py-2 bg-purple-900 hover:bg-purple-800 border border-purple-600 text-purple-300 rounded-lg text-sm transition"
-              >
-                View CNC G-code Preview →
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setActiveTab('gcode')}
+                  className="flex-1 py-2 bg-purple-900 hover:bg-purple-800 border border-purple-600 text-purple-300 rounded-lg text-sm transition"
+                >
+                  View G-code Text →
+                </button>
+                <button
+                  onClick={() => setActiveTab('preview3d')}
+                  className="flex-1 py-2 bg-cyan-900 hover:bg-cyan-800 border border-cyan-600 text-cyan-300 rounded-lg text-sm transition"
+                >
+                  3D Preview →
+                </button>
+              </div>
             )}
           </div>
 
@@ -148,12 +221,18 @@ export default function HybridPlanner() {
                 {selectedJob.totalPrintLayers && Array.from(
                   { length: Math.ceil(selectedJob.totalPrintLayers / machineEveryN) },
                   (_, i) => {
-                    const end = (i + 1) * machineEveryN
+                    const end   = (i + 1) * machineEveryN
                     const start = i * machineEveryN + 1
+                    const isMachined = machinedLayers.includes(Math.min(end, selectedJob.totalPrintLayers!))
                     return (
                       <div key={i} className="space-y-0.5">
-                        <div className="text-blue-400">▣ Print L{start}–L{Math.min(end, selectedJob.totalPrintLayers!)}</div>
-                        <div className="text-orange-400 pl-4">⚙ CNC @ L{Math.min(end, selectedJob.totalPrintLayers!)}</div>
+                        <div className="text-blue-400">
+                          ▣ Print L{start}–L{Math.min(end, selectedJob.totalPrintLayers!)}
+                        </div>
+                        <div className={`pl-4 ${isMachined ? 'text-orange-400' : 'text-gray-600'}`}>
+                          ⚙ CNC @ L{Math.min(end, selectedJob.totalPrintLayers!)}
+                          {isMachined && ' ✓'}
+                        </div>
                       </div>
                     )
                   }
@@ -167,31 +246,52 @@ export default function HybridPlanner() {
       )}
 
       {activeTab === 'gcode' && toolpathGCode && (
-        <GCodePreviewPanel
+        <GCodeTextPanel
           gcode={toolpathGCode}
           machinedLayers={machinedLayers}
           jobName={selectedJob?.name ?? ''}
+          onShow3D={() => setActiveTab('preview3d')}
         />
+      )}
+
+      {activeTab === 'preview3d' && toolpathGCode && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-white font-medium">CNC Toolpath — 3D Preview</h3>
+            <div className="flex gap-3 text-xs text-gray-500">
+              <span><span className="text-cyan-400">■</span> Rapid (G0)</span>
+              <span><span className="text-yellow-300">■</span> Cut (G1)</span>
+              <span><span className="text-orange-400">■</span> {machinedLayers.length} layers machined</span>
+            </div>
+          </div>
+          <div className="bg-gray-950 rounded-xl border border-gray-700 overflow-hidden" style={{ height: '70vh' }}>
+            <GCodePreview3D
+              gcode={toolpathGCode}
+              buildVolume={buildVolume}
+              lineWidth={0.4}
+              className="w-full h-full"
+            />
+          </div>
+        </div>
       )}
     </div>
   )
 }
 
-// ── G-code Preview Panel ────────────────────────────────────────────────────
+// ── G-code Text Panel ────────────────────────────────────────────────────────
 
-function GCodePreviewPanel({
-  gcode,
-  machinedLayers,
-  jobName,
+function GCodeTextPanel({
+  gcode, machinedLayers, jobName, onShow3D,
 }: {
   gcode: string
   machinedLayers: number[]
   jobName: string
+  onShow3D: () => void
 }) {
   const lines = useMemo(() => gcode.split('\n'), [gcode])
 
   const stats = useMemo(() => {
-    const moves = lines.filter(l => /^G0[01]\s/i.test(l)).length
+    const moves        = lines.filter(l => /^G0[01]\s/i.test(l)).length
     const spindleStarts = lines.filter(l => /^M0?3\b/i.test(l)).length
     return { totalLines: lines.length, moves, spindleStarts }
   }, [lines])
@@ -199,32 +299,25 @@ function GCodePreviewPanel({
   const colorLine = (line: string): React.ReactNode => {
     const trimmed = line.trimEnd()
     if (!trimmed) return <span>&nbsp;</span>
-
-    // Comment lines
-    if (trimmed.startsWith(';')) {
+    if (trimmed.startsWith(';'))
       return <span className="text-gray-500 italic">{trimmed}</span>
-    }
 
-    // Mixed: split command from inline comment
-    const commentIdx = trimmed.indexOf(';')
-    const cmd = commentIdx >= 0 ? trimmed.slice(0, commentIdx).trimEnd() : trimmed
-    const comment = commentIdx >= 0 ? trimmed.slice(commentIdx) : ''
-
+    const ci      = trimmed.indexOf(';')
+    const cmd     = ci >= 0 ? trimmed.slice(0, ci).trimEnd() : trimmed
+    const comment = ci >= 0 ? trimmed.slice(ci) : ''
     if (!cmd) return <span className="text-gray-500 italic">{trimmed}</span>
 
-    // Tokenise the command part
-    const tokens = cmd.split(/\s+/)
-    const colored = tokens.map((token, i) => {
-      const upper = token.toUpperCase()
-      if (/^G0[01]$/.test(upper))  return <span key={i} className="text-cyan-400">{token} </span>
-      if (/^G0[23]$/.test(upper))  return <span key={i} className="text-cyan-300">{token} </span>
-      if (/^G\d+$/.test(upper))    return <span key={i} className="text-cyan-500">{token} </span>
-      if (/^M0?3$/.test(upper))    return <span key={i} className="text-green-400">{token} </span>
-      if (/^M0?5$/.test(upper))    return <span key={i} className="text-red-400">{token} </span>
-      if (/^M\d+$/.test(upper))    return <span key={i} className="text-purple-400">{token} </span>
-      if (/^[XYZIJ]-?[\d.]+$/.test(upper)) return <span key={i} className="text-yellow-300">{token} </span>
-      if (/^F[\d.]+$/.test(upper)) return <span key={i} className="text-orange-300">{token} </span>
-      if (/^S[\d.]+$/.test(upper)) return <span key={i} className="text-green-300">{token} </span>
+    const colored = cmd.split(/\s+/).map((token, i) => {
+      const u = token.toUpperCase()
+      if (/^G0[01]$/.test(u))          return <span key={i} className="text-cyan-400">{token} </span>
+      if (/^G0[23]$/.test(u))          return <span key={i} className="text-cyan-300">{token} </span>
+      if (/^G\d+$/.test(u))            return <span key={i} className="text-cyan-500">{token} </span>
+      if (/^M0?3$/.test(u))            return <span key={i} className="text-green-400">{token} </span>
+      if (/^M0?5$/.test(u))            return <span key={i} className="text-red-400">{token} </span>
+      if (/^M\d+$/.test(u))            return <span key={i} className="text-purple-400">{token} </span>
+      if (/^[XYZIJ]-?[\d.]+$/.test(u)) return <span key={i} className="text-yellow-300">{token} </span>
+      if (/^F[\d.]+$/.test(u))         return <span key={i} className="text-orange-300">{token} </span>
+      if (/^S[\d.]+$/.test(u))         return <span key={i} className="text-green-300">{token} </span>
       return <span key={i} className="text-gray-200">{token} </span>
     })
 
@@ -238,26 +331,30 @@ function GCodePreviewPanel({
 
   return (
     <div className="space-y-4">
-      {/* Stats bar */}
       <div className="grid grid-cols-4 gap-4">
-        <StatCard label="Layers machined" value={machinedLayers.length} color="purple" />
+        <StatCard label="Layers machined" value={machinedLayers.length}            color="purple" />
         <StatCard label="Total G-code lines" value={stats.totalLines.toLocaleString()} color="blue" />
-        <StatCard label="Move commands" value={stats.moves.toLocaleString()} color="cyan" />
-        <StatCard label="Spindle starts" value={stats.spindleStarts} color="green" />
+        <StatCard label="Move commands"    value={stats.moves.toLocaleString()}    color="cyan" />
+        <StatCard label="Spindle starts"   value={stats.spindleStarts}             color="green" />
       </div>
 
-      {/* G-code viewer */}
+      <div className="flex justify-end">
+        <button
+          onClick={onShow3D}
+          className="px-4 py-2 bg-cyan-800 hover:bg-cyan-700 text-cyan-200 rounded-lg text-sm border border-cyan-600 transition"
+        >
+          Switch to 3D Preview →
+        </button>
+      </div>
+
       <div className="bg-gray-950 border border-gray-800 rounded-xl overflow-hidden">
         <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800 bg-gray-900">
-          <span className="text-sm text-gray-400 font-mono">
-            toolpath.gcode — {jobName}
-          </span>
+          <span className="text-sm text-gray-400 font-mono">toolpath.gcode — {jobName}</span>
           <div className="flex gap-3 text-xs text-gray-600">
             <span><span className="text-cyan-400">■</span> G-code</span>
             <span><span className="text-yellow-300">■</span> Coords</span>
             <span><span className="text-green-400">■</span> Spindle on</span>
             <span><span className="text-red-400">■</span> Spindle off</span>
-            <span><span className="text-orange-300">■</span> Feed</span>
           </div>
         </div>
         <div className="overflow-auto max-h-[60vh] text-xs font-mono leading-5">
@@ -268,9 +365,7 @@ function GCodePreviewPanel({
                   <td className="select-none text-right text-gray-700 px-3 py-px w-12 border-r border-gray-800/50">
                     {i + 1}
                   </td>
-                  <td className="px-4 py-px whitespace-pre">
-                    {colorLine(line)}
-                  </td>
+                  <td className="px-4 py-px whitespace-pre">{colorLine(line)}</td>
                 </tr>
               ))}
             </tbody>
@@ -296,16 +391,8 @@ function StatCard({ label, value, color }: { label: string; value: string | numb
   )
 }
 
-function TabBtn({
-  active,
-  disabled,
-  onClick,
-  children,
-}: {
-  active: boolean
-  disabled?: boolean
-  onClick: () => void
-  children: React.ReactNode
+function TabBtn({ active, disabled, onClick, children }: {
+  active: boolean; disabled?: boolean; onClick: () => void; children: React.ReactNode
 }) {
   return (
     <button
@@ -313,9 +400,7 @@ function TabBtn({
       disabled={disabled}
       className={[
         'flex items-center gap-1 px-4 py-2 text-sm rounded-t-lg border-b-2 transition',
-        active
-          ? 'border-primary text-white'
-          : 'border-transparent text-gray-500 hover:text-gray-300',
+        active ? 'border-primary text-white' : 'border-transparent text-gray-500 hover:text-gray-300',
         disabled ? 'opacity-40 cursor-not-allowed' : '',
       ].join(' ')}
     >

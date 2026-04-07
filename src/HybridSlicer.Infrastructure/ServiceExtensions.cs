@@ -61,6 +61,7 @@ public static class ServiceExtensions
         services.AddScoped<IToolpathPlanner,    ContourToolpathPlanner>();
         services.AddScoped<ISafetyValidator,    CollisionSafetyValidator>();
         services.AddScoped<IHybridOrchestrator, HybridOrchestrator>();
+        services.AddSingleton<ICuraGCodeParser, CuraGCodeParser>();   // stateless, reusable
 
         // Machine driver is Singleton so the connection persists across SignalR hub method calls
         // and across HTTP requests. RepRapHttpDriver uses the HTTP rr_* API for RepRapFirmware.

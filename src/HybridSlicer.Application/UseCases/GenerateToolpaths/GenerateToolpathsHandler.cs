@@ -10,12 +10,13 @@ namespace HybridSlicer.Application.UseCases.GenerateToolpaths;
 
 public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpathsCommand, GenerateToolpathsResult>
 {
-    private readonly IPrintJobRepository _jobs;
+    private readonly IPrintJobRepository     _jobs;
     private readonly IPrintProfileRepository _printProfiles;
     private readonly IMachineProfileRepository _machines;
-    private readonly ICncToolRepository _tools;
-    private readonly IToolpathPlanner _planner;
-    private readonly ISafetyValidator _safety;
+    private readonly ICncToolRepository      _tools;
+    private readonly IToolpathPlanner        _planner;
+    private readonly ISafetyValidator        _safety;
+    private readonly ICuraGCodeParser        _parser;
     private readonly ILogger<GenerateToolpathsHandler> _logger;
 
     public GenerateToolpathsHandler(
@@ -25,24 +26,31 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
         ICncToolRepository tools,
         IToolpathPlanner planner,
         ISafetyValidator safety,
+        ICuraGCodeParser parser,
         ILogger<GenerateToolpathsHandler> logger)
     {
-        _jobs = jobs;
+        _jobs          = jobs;
         _printProfiles = printProfiles;
-        _machines = machines;
-        _tools = tools;
-        _planner = planner;
-        _safety = safety;
-        _logger = logger;
+        _machines      = machines;
+        _tools         = tools;
+        _planner       = planner;
+        _safety        = safety;
+        _parser        = parser;
+        _logger        = logger;
     }
 
-    public async Task<GenerateToolpathsResult> Handle(GenerateToolpathsCommand cmd, CancellationToken ct)
+    public async Task<GenerateToolpathsResult> Handle(
+        GenerateToolpathsCommand cmd, CancellationToken ct)
     {
+        // ── Load required entities ────────────────────────────────────────────
         var job = await _jobs.GetByIdAsync(cmd.JobId, ct)
             ?? throw new DomainException("JOB_NOT_FOUND", $"Job {cmd.JobId} not found.");
 
         if (job.TotalPrintLayers is null)
             throw new DomainException("NOT_SLICED", "Job must be sliced before toolpaths can be generated.");
+
+        if (job.PrintGCodePath is null || !File.Exists(job.PrintGCodePath))
+            throw new DomainException("NO_GCODE", "Print G-code file not found. Re-slice the job.");
 
         var machine = await _machines.GetByIdAsync(job.MachineProfileId, ct)
             ?? throw new DomainException("MACHINE_NOT_FOUND", $"Machine profile {job.MachineProfileId} not found.");
@@ -53,56 +61,140 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
         var profile = await _printProfiles.GetByIdAsync(job.PrintProfileId, ct)
             ?? throw new DomainException("PROFILE_NOT_FOUND", $"Print profile {job.PrintProfileId} not found.");
 
+        // ── Depth-of-cut validation ───────────────────────────────────────────
+        var axialDepthMm = cmd.MachineEveryNLayers * profile.LayerHeightMm;
+        if (axialDepthMm > tool.MaxDepthOfCutMm)
+            _logger.LogWarning(
+                "Axial depth {D:F3} mm exceeds tool MaxDepthOfCut {M:F3} mm " +
+                "(machineEveryN={N} × layerHeight={H}). Proceeding with caution.",
+                axialDepthMm, tool.MaxDepthOfCutMm,
+                cmd.MachineEveryNLayers, profile.LayerHeightMm);
+
+        // ── Parse Cura G-code for wall paths ─────────────────────────────────
+        _logger.LogInformation("Parsing Cura G-code: {Path}", job.PrintGCodePath);
+        var gcodeText = await File.ReadAllTextAsync(job.PrintGCodePath, ct);
+        var parsed    = await Task.Run(() => _parser.Parse(gcodeText), ct);
+
+        _logger.LogInformation(
+            "Parsed {Count} layers from Cura G-code. WALL-OUTER found in {OW} layers.",
+            parsed.Layers.Count,
+            parsed.Layers.Values.Count(l => l.OuterWallPaths.Count > 0));
+
+        // ── Mark job and prepare output ───────────────────────────────────────
         job.AssignCncTool(cmd.CncToolId);
         job.MarkGeneratingToolpaths();
         await _jobs.UpdateAsync(job, ct);
 
         var machinedLayers = new List<int>();
-        var gcodeBuilder = new StringBuilder();
+        var gcodeBuilder   = new StringBuilder();
         gcodeBuilder.AppendLine($"; CNC Toolpath G-code — Job: {job.Name}");
-        gcodeBuilder.AppendLine($"; Tool: {tool.Name}  Ø{tool.DiameterMm} mm  Feed: {tool.RecommendedFeedMmPerMin} mm/min  RPM: {tool.RecommendedRpm}");
-        gcodeBuilder.AppendLine($"; Machine every {cmd.MachineEveryNLayers} layer(s)  |  Generated: {DateTime.UtcNow:u}");
+        gcodeBuilder.AppendLine($"; Tool     : {tool.Name}  Ø{tool.DiameterMm} mm  Feed: {tool.RecommendedFeedMmPerMin} mm/min  RPM: {tool.RecommendedRpm}");
+        gcodeBuilder.AppendLine($"; Nozzle   : Ø{profile.LineWidthMm} mm  Layer height: {profile.LayerHeightMm} mm");
+        gcodeBuilder.AppendLine($"; Interval : every {cmd.MachineEveryNLayers} layer(s)  Axial depth: {axialDepthMm:F3} mm");
+        gcodeBuilder.AppendLine($"; Options  : MachineInnerWalls={cmd.MachineInnerWalls}  AvoidSupports={cmd.AvoidSupports}");
+        gcodeBuilder.AppendLine($"; CRC      : offset = tool_radius({tool.DiameterMm / 2:F3}) + nozzle_radius({profile.LineWidthMm / 2:F3}) = {(tool.DiameterMm + profile.LineWidthMm) / 2:F3} mm outward");
+        gcodeBuilder.AppendLine($"; Source   : Cura WALL-OUTER paths (parsed from print.gcode)");
+        gcodeBuilder.AppendLine($"; Generated: {DateTime.UtcNow:u}");
         gcodeBuilder.AppendLine();
 
         try
         {
+            // Handler uses 1-based layer numbers; Cura uses 0-based
             for (var layer = cmd.MachineEveryNLayers;
                  layer <= job.TotalPrintLayers;
                  layer += cmd.MachineEveryNLayers)
             {
-                var zHeight = layer * profile.LayerHeightMm;
+                var curaLayerIdx = layer - 1;   // convert to Cura 0-based index
+                var zHeight      = layer * profile.LayerHeightMm;
 
-                _logger.LogDebug("Planning toolpath for job {JobId} layer {Layer} Z={Z}", cmd.JobId, layer, zHeight);
+                _logger.LogDebug("Processing layer {Layer} (Cura ;LAYER:{CI}) Z={Z:F3}",
+                    layer, curaLayerIdx, zHeight);
 
-                var toolpathRequest = new ToolpathRequest(
-                    StlFilePath:           job.StlFilePath,
-                    ZHeightMm:             zHeight,
-                    ToolDiameterMm:        tool.DiameterMm,
-                    MaxDepthOfCutMm:       tool.MaxDepthOfCutMm,
-                    FeedRateMmPerMin:      tool.RecommendedFeedMmPerMin,
-                    SpindleRpm:            tool.RecommendedRpm,
-                    MachineOffset:         machine.CncOffset,
-                    SafeClearanceHeightMm: machine.SafeClearanceHeightMm);
-
-                var toolpath = await _planner.PlanContourAsync(toolpathRequest, ct);
-
-                if (toolpath.IsEmpty)
+                // Look up parsed layer data (try exact match, then nearest below)
+                if (!parsed.Layers.TryGetValue(curaLayerIdx, out var layerData))
                 {
-                    _logger.LogDebug("No geometry at layer {Layer} — skipping CNC step", layer);
-                    gcodeBuilder.AppendLine($"; Layer {layer} (Z={zHeight:F3} mm) — no geometry, skipped");
+                    gcodeBuilder.AppendLine($"; Layer {layer} (Z={zHeight:F3} mm) — no Cura data, skipped");
                     gcodeBuilder.AppendLine();
+                    _logger.LogDebug("No parsed data for Cura layer {CI}", curaLayerIdx);
                     continue;
                 }
 
-                // Safety validation — all checks must pass before the step is accepted
-                var safetyReq = new SafetyValidationRequest(
-                    CncGCode:               toolpath.GCode,
-                    PrintedGeometryBounds:  [],   // Replaced with real geometry in Phase 7
-                    MachineMaxX:            machine.BedWidthMm,
-                    MachineMaxY:            machine.BedDepthMm,
-                    MachineMaxZ:            machine.BedHeightMm,
+                // Support avoidance: skip this CNC step if the layer has active supports
+                if (cmd.AvoidSupports && layerData.SupportPaths.Count > 0)
+                {
+                    gcodeBuilder.AppendLine(
+                        $"; Layer {layer} (Z={zHeight:F3} mm) — support detected, CNC skipped (AvoidSupports=true)");
+                    gcodeBuilder.AppendLine();
+                    _logger.LogInformation("Layer {L}: support detected, skipping CNC (AvoidSupports)", layer);
+                    continue;
+                }
+
+                // Collect wall paths to machine
+                var wallPaths = new List<IReadOnlyList<(double X, double Y)>>(
+                    layerData.OuterWallPaths);
+
+                if (cmd.MachineInnerWalls)
+                    wallPaths.AddRange(layerData.InnerWallPaths);
+
+                if (wallPaths.Count == 0)
+                {
+                    gcodeBuilder.AppendLine($"; Layer {layer} (Z={zHeight:F3} mm) — no wall paths found, skipped");
+                    gcodeBuilder.AppendLine();
+                    _logger.LogDebug("Layer {L}: no wall paths", layer);
+                    continue;
+                }
+
+                // Generate CNC toolpath from outer wall paths
+                var outerRequest = new WallPathsRequest(
+                    WallPaths:              layerData.OuterWallPaths,
+                    ZHeightMm:              zHeight,
+                    ToolDiameterMm:         tool.DiameterMm,
+                    NozzleDiameterMm:       profile.LineWidthMm,
+                    FeedRateMmPerMin:       tool.RecommendedFeedMmPerMin,
+                    SpindleRpm:             tool.RecommendedRpm,
+                    MachineOffset:          machine.CncOffset,
                     SafeClearanceHeightMm:  machine.SafeClearanceHeightMm,
-                    ToolRadiusMm:           tool.RadiusMm);
+                    IsOuterWall:            true,
+                    ClimbMilling:           true);
+
+                var toolpath = await _planner.PlanFromWallPathsAsync(outerRequest, ct);
+
+                // Optionally add inner wall passes
+                ToolpathResult? innerToolpath = null;
+                if (cmd.MachineInnerWalls && layerData.InnerWallPaths.Count > 0)
+                {
+                    var innerRequest = outerRequest with
+                    {
+                        WallPaths   = layerData.InnerWallPaths,
+                        IsOuterWall = false,
+                    };
+                    innerToolpath = await _planner.PlanFromWallPathsAsync(innerRequest, ct);
+                }
+
+                if (toolpath.IsEmpty && (innerToolpath is null || innerToolpath.IsEmpty))
+                {
+                    gcodeBuilder.AppendLine($"; Layer {layer} (Z={zHeight:F3} mm) — planner returned empty, skipped");
+                    gcodeBuilder.AppendLine();
+                    _logger.LogDebug("Layer {L}: planner returned empty toolpath", layer);
+                    continue;
+                }
+
+                // Safety validation
+                var combinedGCode = toolpath.GCode
+                    + (innerToolpath is { IsEmpty: false } ? "\n" + innerToolpath.GCode : string.Empty);
+
+                var allBounds = toolpath.ToolpathBounds
+                    .Concat(innerToolpath?.ToolpathBounds ?? [])
+                    .ToList();
+
+                var safetyReq = new SafetyValidationRequest(
+                    CncGCode:              combinedGCode,
+                    PrintedGeometryBounds: [],
+                    MachineMaxX:           machine.BedWidthMm,
+                    MachineMaxY:           machine.BedDepthMm,
+                    MachineMaxZ:           machine.BedHeightMm,
+                    SafeClearanceHeightMm: machine.SafeClearanceHeightMm,
+                    ToolRadiusMm:          tool.RadiusMm);
 
                 var validation = await _safety.ValidateToolpathAsync(safetyReq, ct);
 
@@ -111,26 +203,32 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                         $"Layer {layer}: {string.Join("; ", validation.Issues)}");
 
                 if (validation.Status == SafetyStatus.Warning)
-                    _logger.LogWarning("Safety WARNING at layer {Layer}: {Issues}",
+                    _logger.LogWarning("Safety WARNING at layer {L}: {Issues}",
                         layer, string.Join("; ", validation.Issues));
 
-                gcodeBuilder.AppendLine($"; ── Layer {layer} (Z={zHeight:F3} mm) ──────────────────────────────");
-                gcodeBuilder.AppendLine(toolpath.GCode.TrimEnd());
+                gcodeBuilder.AppendLine($"; ── Layer {layer} (Z={zHeight:F3} mm) [{layerData.OuterWallPaths.Count} outer wall segments] ─");
+                gcodeBuilder.AppendLine(combinedGCode.TrimEnd());
                 gcodeBuilder.AppendLine();
 
                 machinedLayers.Add(layer);
-                _logger.LogInformation("Toolpath OK — layer {Layer} [{Status}]", layer, validation.Status);
+                _logger.LogInformation(
+                    "Toolpath OK — layer {L} Z={Z:F3} [{Status}]  {OW} outer + {IW} inner segments",
+                    layer, zHeight, validation.Status,
+                    layerData.OuterWallPaths.Count, layerData.InnerWallPaths.Count);
             }
 
-            var jobDir = Path.GetDirectoryName(job.StlFilePath)!;
+            // Write toolpath file
+            var jobDir          = Path.GetDirectoryName(job.StlFilePath)!;
             var toolpathGCodePath = Path.Combine(jobDir, "toolpath.gcode");
             await File.WriteAllTextAsync(toolpathGCodePath, gcodeBuilder.ToString(), ct);
 
             job.MarkToolpathsComplete(toolpathGCodePath);
             await _jobs.UpdateAsync(job, ct);
 
-            _logger.LogInformation("Toolpath generation complete for job {JobId}: {Count} layers",
-                cmd.JobId, machinedLayers.Count);
+            _logger.LogInformation(
+                "Toolpath generation complete for {JobId}: {Count}/{Total} layers machined",
+                cmd.JobId, machinedLayers.Count,
+                (int)Math.Ceiling((double)job.TotalPrintLayers!.Value / cmd.MachineEveryNLayers));
 
             return new GenerateToolpathsResult(cmd.JobId, machinedLayers.Count, machinedLayers);
         }
