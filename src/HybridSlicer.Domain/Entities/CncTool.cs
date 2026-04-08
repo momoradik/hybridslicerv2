@@ -16,6 +16,8 @@ public class CncTool
     public double DiameterMm { get; private set; }
     public double RadiusMm => DiameterMm / 2.0;
     public double FluteLengthMm { get; private set; }
+    /// <summary>Overall tool length from spindle collet face to tool tip (mm).</summary>
+    public double ToolLengthMm { get; private set; }
     public double ShankDiameterMm { get; private set; }
     public int FluteCount { get; private set; }
 
@@ -44,7 +46,8 @@ public class CncTool
         string toolMaterial = "HSS",
         double maxDepthOfCutMm = 0,
         int recommendedRpm = 10000,
-        double recommendedFeedMmPerMin = 500)
+        double recommendedFeedMmPerMin = 500,
+        double toolLengthMm = 50.0)
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new DomainException("INVALID_NAME", "Tool name must not be empty.");
@@ -58,6 +61,7 @@ public class CncTool
             Type = type,
             DiameterMm = diameterMm,
             FluteLengthMm = fluteLengthMm,
+            ToolLengthMm = toolLengthMm > 0 ? toolLengthMm : 50.0,
             ShankDiameterMm = shankDiameterMm,
             FluteCount = fluteCount,
             ToolMaterial = toolMaterial,

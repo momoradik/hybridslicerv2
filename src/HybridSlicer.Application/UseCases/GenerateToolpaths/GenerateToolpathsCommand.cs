@@ -21,7 +21,13 @@ public sealed record GenerateToolpathsCommand(
     /// so that lower geometry never becomes unreachable. MachineEveryNLayers is ignored.
     /// Rule: machine when pendingPrintHeight >= tool.FluteLengthMm * 0.8.
     /// </summary>
-    bool AutoMachiningFrequency = false) : IRequest<GenerateToolpathsResult>;
+    bool AutoMachiningFrequency = false,
+    /// <summary>
+    /// Additional Z lift (mm) applied to every machining pass above the nominal layer height.
+    /// Default 0 = machine at exact layer surface. Positive values add safety distance in Z.
+    /// Applied consistently from the first to the last machining layer.
+    /// </summary>
+    double ZSafetyOffsetMm = 0.0) : IRequest<GenerateToolpathsResult>;
 
 public sealed record GenerateToolpathsResult(
     Guid                 JobId,

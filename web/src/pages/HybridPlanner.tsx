@@ -24,6 +24,7 @@ export default function HybridPlanner() {
   const [avoidSupports,         setAvoidSupports]         = useState(false)
   const [supportClearanceMm,    setSupportClearanceMm]    = useState(2.0)
   const [autoMachiningFrequency, setAutoMachiningFrequency] = useState(false)
+  const [zSafetyOffsetMm,       setZSafetyOffsetMm]       = useState(0.0)
   const [activeTab,             setActiveTab]             = useState<Tab>('config')
   const [toolpathGCode,         setToolpathGCode]         = useState<string | null>(null)
   const [printGCode,            setPrintGCode]            = useState<string | null>(null)
@@ -38,7 +39,7 @@ export default function HybridPlanner() {
     mutationFn: () =>
       jobsApi.generateToolpaths(
         jobId, toolId, machineEveryN, machineInnerWalls, avoidSupports,
-        supportClearanceMm, autoMachiningFrequency
+        supportClearanceMm, autoMachiningFrequency, zSafetyOffsetMm
       ),
     onSuccess: async (result: any) => {
       qc.invalidateQueries({ queryKey: ['jobs'] })
@@ -131,9 +132,43 @@ export default function HybridPlanner() {
               <select className="input" value={toolId} onChange={e => setToolId(e.target.value)}>
                 <option value="">Select…</option>
                 {tools.map(t => (
-                  <option key={t.id} value={t.id}>{t.name} (Ø{t.diameterMm} mm)</option>
+                  <option key={t.id} value={t.id}>
+                    {t.name} (Ø{t.diameterMm} mm · flute {t.fluteLengthMm} mm · len {t.toolLengthMm ?? '?'} mm)
+                  </option>
                 ))}
               </select>
+              {selectedTool && (
+                <div className="flex gap-3 text-[11px] text-gray-500 mt-1 flex-wrap">
+                  <span><span className="text-violet-400">Ø</span> {selectedTool.diameterMm} mm</span>
+                  <span><span className="text-orange-400">flute</span> {selectedTool.fluteLengthMm} mm</span>
+                  <span><span className="text-blue-400">length</span> {selectedTool.toolLengthMm ?? '—'} mm</span>
+                  <span className="text-gray-600">RPM {selectedTool.recommendedRpm.toLocaleString()}</span>
+                </div>
+              )}
+            </Field>
+
+            {/* Z Safety Offset */}
+            <Field label="Z Safety Offset (mm)">
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0} max={5} step={0.05}
+                  value={zSafetyOffsetMm}
+                  onChange={e => setZSafetyOffsetMm(Math.max(0, Math.min(5, +e.target.value)))}
+                  className="input w-24 text-center"
+                />
+                <span className="text-xs text-gray-500">mm</span>
+                <span className="text-xs text-gray-600">(raises all CNC passes above nominal layer)</span>
+              </div>
+              {zSafetyOffsetMm > 0 ? (
+                <div className="text-xs text-amber-400 mt-1">
+                  All machining layers raised by +{zSafetyOffsetMm.toFixed(2)} mm above nominal layer height
+                </div>
+              ) : (
+                <div className="text-xs text-gray-600 mt-1">
+                  Default 0 — machines exactly at layer surface
+                </div>
+              )}
             </Field>
 
             {!autoMachiningFrequency && (
@@ -271,7 +306,7 @@ export default function HybridPlanner() {
                   })()}
                 </div>
                 <div className="text-yellow-500">
-                  Check tool diameter vs. feature width, flute length vs. part height, and support clearance settings.
+                  Check: tool diameter vs. feature width · flute length vs. part height · tool length vs. machine Z travel · support clearance settings.
                 </div>
               </div>
             )}

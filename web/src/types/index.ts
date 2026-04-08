@@ -53,6 +53,8 @@ export interface CncTool {
   type: ToolType
   diameterMm: number
   fluteLengthMm: number
+  /** Overall length from spindle collet face to tool tip (mm). Used for spindle clearance safety. */
+  toolLengthMm: number
   shankDiameterMm: number
   fluteCount: number
   toolMaterial: string

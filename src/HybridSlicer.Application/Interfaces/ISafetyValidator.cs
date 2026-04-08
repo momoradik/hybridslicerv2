@@ -31,7 +31,13 @@ public sealed record SafetyValidationRequest(
     double SafeClearanceHeightMm,
 
     /// <summary>Tool radius for engagement checks.</summary>
-    double ToolRadiusMm);
+    double ToolRadiusMm,
+    /// <summary>
+    /// Overall tool length from spindle collet to tip (mm).
+    /// Used for spindle-clearance check: spindle bottom = move.Z + ToolLengthMm must not
+    /// exceed MachineMaxZ, ensuring the spindle body stays within the machine Z envelope.
+    /// </summary>
+    double ToolLengthMm = 0.0);
 
 public sealed record SafetyValidationResult(
     SafetyStatus Status,

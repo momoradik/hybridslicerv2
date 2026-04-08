@@ -96,10 +96,14 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
         var allUnmachinableRegions = new List<UnmachinableRegion>();
         var gcodeBuilder        = new StringBuilder();
         gcodeBuilder.AppendLine($"; CNC Toolpath G-code — Job: {job.Name}");
-        gcodeBuilder.AppendLine($"; Tool     : {tool.Name}  Ø{tool.DiameterMm} mm  Flute: {tool.FluteLengthMm} mm  Feed: {tool.RecommendedFeedMmPerMin} mm/min  RPM: {tool.RecommendedRpm}");
+        gcodeBuilder.AppendLine($"; Tool     : {tool.Name}  Ø{tool.DiameterMm} mm  Flute: {tool.FluteLengthMm} mm  Tool length: {tool.ToolLengthMm} mm  Feed: {tool.RecommendedFeedMmPerMin} mm/min  RPM: {tool.RecommendedRpm}");
         gcodeBuilder.AppendLine($"; Nozzle   : Ø{profile.LineWidthMm} mm  Layer height: {profile.LayerHeightMm} mm");
         gcodeBuilder.AppendLine($"; Interval : {(cmd.AutoMachiningFrequency ? "AUTO (flute-based)" : $"every {cmd.MachineEveryNLayers} layer(s)")}  Axial depth: {axialDepthMm:F3} mm");
         gcodeBuilder.AppendLine($"; Options  : MachineInnerWalls={cmd.MachineInnerWalls}  AvoidSupports={cmd.AvoidSupports}  SupportClearance={cmd.SupportClearanceMm:F2} mm  AutoFreq={cmd.AutoMachiningFrequency}");
+        gcodeBuilder.AppendLine(cmd.ZSafetyOffsetMm > 0
+            ? $"; Z Offset  : +{cmd.ZSafetyOffsetMm:F3} mm — all machining passes raised by this amount above nominal layer height"
+            : $"; Z Offset  : none (machining at nominal layer height)");
+        gcodeBuilder.AppendLine($"; Spindle   : tip→spindle = {tool.ToolLengthMm:F1} mm  (spindle clears Z+{tool.ToolLengthMm:F1} mm above tip position)");
         gcodeBuilder.AppendLine($"; CRC      : offset = tool_radius({tool.DiameterMm / 2:F3}) + nozzle_radius({profile.LineWidthMm / 2:F3}) = {(tool.DiameterMm + profile.LineWidthMm) / 2:F3} mm outward");
         gcodeBuilder.AppendLine($"; Source   : Cura WALL-OUTER paths (parsed from print.gcode)");
         gcodeBuilder.AppendLine($"; Generated: {DateTime.UtcNow:u}");
@@ -146,9 +150,38 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
             {
                 var curaLayerIdx = layer - 1;   // convert to Cura 0-based index
                 var zHeight      = layer * profile.LayerHeightMm;
+                // Apply Z safety offset: raise every machining pass by the configured amount.
+                // This adds a consistent safety distance in Z above the nominal layer surface.
+                var effectiveZ = zHeight + cmd.ZSafetyOffsetMm;
 
-                _logger.LogDebug("Processing layer {Layer} (Cura ;LAYER:{CI}) Z={Z:F3}",
-                    layer, curaLayerIdx, zHeight);
+                _logger.LogDebug("Processing layer {Layer} (Cura ;LAYER:{CI}) Z={Z:F3} effectiveZ={EZ:F3}",
+                    layer, curaLayerIdx, zHeight, effectiveZ);
+
+                // ── Spindle clearance pre-check ────────────────────────────────────────
+                // When tool tip is at effectiveZ, the spindle collet is at effectiveZ + toolLengthMm.
+                // That must stay within the machine Z travel. If not, the spindle body would
+                // crash into the machine frame or gantry — skip and log as SpindleCollision.
+                if (tool.ToolLengthMm > 0 && effectiveZ + tool.ToolLengthMm > machine.BedHeightMm)
+                {
+                    var spindleZ = effectiveZ + tool.ToolLengthMm;
+                    _logger.LogWarning(
+                        "Layer {L}: SpindleCollision — spindle at {SZ:F3} mm (tip {Z:F3} + tool length {TL:F3}) " +
+                        "exceeds machine Z limit {MZ:F3} mm — layer skipped",
+                        layer, spindleZ, effectiveZ, tool.ToolLengthMm, machine.BedHeightMm);
+                    allUnmachinableRegions.Add(new UnmachinableRegion(effectiveZ, "SpindleCollision",
+                        new BoundingBox2D(0, 0, 0, 0)));
+                    gcodeBuilder.AppendLine(
+                        $"; Layer {layer} Z={effectiveZ:F3} mm — SPINDLE COLLISION " +
+                        $"(spindle at {spindleZ:F3} mm > machine Z {machine.BedHeightMm} mm) — skipped");
+                    gcodeBuilder.AppendLine();
+                    continue;
+                }
+
+                // ── Tool definition sanity check ──────────────────────────────────────
+                if (tool.ToolLengthMm > 0 && tool.FluteLengthMm > tool.ToolLengthMm)
+                    _logger.LogWarning(
+                        "Tool {Name}: flute length {FL:F2} mm exceeds tool length {TL:F2} mm — invalid tool definition",
+                        tool.Name, tool.FluteLengthMm, tool.ToolLengthMm);
 
                 // Look up parsed layer data (try exact match, then nearest below)
                 if (!parsed.Layers.TryGetValue(curaLayerIdx, out var layerData))
@@ -185,10 +218,10 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                     continue;
                 }
 
-                // Generate CNC toolpath from outer wall paths
+                // Generate CNC toolpath from outer wall paths (at effectiveZ = zHeight + zSafetyOffset)
                 var outerRequest = new WallPathsRequest(
                     WallPaths:              layerData.OuterWallPaths,
-                    ZHeightMm:              zHeight,
+                    ZHeightMm:              effectiveZ,
                     ToolDiameterMm:         tool.DiameterMm,
                     NozzleDiameterMm:       profile.LineWidthMm,
                     FeedRateMmPerMin:       tool.RecommendedFeedMmPerMin,
@@ -206,11 +239,11 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                 if (toolpath.UnmachinableRegions is { Count: > 0 })
                     allUnmachinableRegions.AddRange(toolpath.UnmachinableRegions);
 
-                // Check FluteTooShort for this layer: pending depth should not exceed flute length
+                // Check FluteTooShort for this layer: axial depth must not exceed flute length
                 if (tool.FluteLengthMm > 0 && axialDepthMm > tool.FluteLengthMm)
                 {
                     var env = new BoundingBox2D(0, 0, 0, 0);
-                    allUnmachinableRegions.Add(new UnmachinableRegion(zHeight, "FluteTooShort", env));
+                    allUnmachinableRegions.Add(new UnmachinableRegion(effectiveZ, "FluteTooShort", env));
                 }
 
                 // Optionally add inner wall passes
@@ -252,7 +285,8 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                     MachineMaxY:           machine.BedDepthMm,
                     MachineMaxZ:           machine.BedHeightMm,
                     SafeClearanceHeightMm: machine.SafeClearanceHeightMm,
-                    ToolRadiusMm:          tool.RadiusMm);
+                    ToolRadiusMm:          tool.RadiusMm,
+                    ToolLengthMm:          tool.ToolLengthMm);
 
                 var validation = await _safety.ValidateToolpathAsync(safetyReq, ct);
 
@@ -264,7 +298,7 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                     _logger.LogWarning("Safety WARNING at layer {L}: {Issues}",
                         layer, string.Join("; ", validation.Issues));
 
-                gcodeBuilder.AppendLine($"; ── Layer {layer} (Z={zHeight:F3} mm) [{layerData.OuterWallPaths.Count} outer wall segments] ─");
+                gcodeBuilder.AppendLine($"; ── Layer {layer} (nominal Z={zHeight:F3} mm  effective Z={effectiveZ:F3} mm) [{layerData.OuterWallPaths.Count} outer wall segments] ─");
                 gcodeBuilder.AppendLine(combinedGCode.TrimEnd());
                 gcodeBuilder.AppendLine();
 

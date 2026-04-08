@@ -60,6 +60,17 @@ public sealed class CollisionSafetyValidator : ISafetyValidator
                     }
                 }
             }
+
+            // 4. Spindle clearance: spindle bottom (tool tip Z + tool length) must stay within machine Z envelope.
+            //    Prevents the spindle body from crashing into the machine frame or fixture.
+            if (request.ToolLengthMm > 0)
+            {
+                var spindleZ = move.Z + request.ToolLengthMm;
+                if (spindleZ > request.MachineMaxZ)
+                    issues.Add(
+                        $"SpindleCollision: spindle at Z={spindleZ:F4} mm (tip {move.Z:F4} + tool length {request.ToolLengthMm:F4}) " +
+                        $"exceeds machine Z limit {request.MachineMaxZ:F4} mm.");
+            }
         }
 
         SafetyStatus status;
@@ -67,7 +78,7 @@ public sealed class CollisionSafetyValidator : ISafetyValidator
         {
             status = SafetyStatus.Clear;
         }
-        else if (issues.Any(i => i.Contains("intersects")))
+        else if (issues.Any(i => i.Contains("intersects") || i.Contains("SpindleCollision")))
         {
             status = SafetyStatus.Blocked;
             _logger.LogWarning("Safety BLOCKED for toolpath: {Count} issues", issues.Count);

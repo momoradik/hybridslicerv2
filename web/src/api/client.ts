@@ -51,6 +51,7 @@ export const jobsApi = {
     machineInnerWalls = false, avoidSupports = false,
     supportClearanceMm = 2.0,
     autoMachiningFrequency = false,
+    zSafetyOffsetMm = 0,
   ) =>
     http.post(`/jobs/${id}/generate-toolpaths`, {
       cncToolId: toolId,
@@ -59,6 +60,7 @@ export const jobsApi = {
       avoidSupports,
       supportClearanceMm,
       autoMachiningFrequency,
+      zSafetyOffsetMm,
     }).then(r => r.data),
 
   planHybrid: (id: string, machineEveryN: number) =>

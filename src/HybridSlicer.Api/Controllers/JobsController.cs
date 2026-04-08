@@ -86,7 +86,8 @@ public sealed class JobsController : ControllerBase
                 request.MachineInnerWalls,
                 request.AvoidSupports,
                 request.SupportClearanceMm,
-                request.AutoMachiningFrequency), ct);
+                request.AutoMachiningFrequency,
+                request.ZSafetyOffsetMm), ct);
         return Accepted(result);
     }
 
@@ -173,5 +174,6 @@ public record GenerateToolpathsRequest(
     bool   MachineInnerWalls        = false,
     bool   AvoidSupports            = false,
     double SupportClearanceMm       = 2.0,
-    bool   AutoMachiningFrequency   = false);
+    bool   AutoMachiningFrequency   = false,
+    double ZSafetyOffsetMm          = 0.0);
 public record PlanHybridRequest(int MachineEveryNLayers);
