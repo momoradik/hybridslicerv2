@@ -193,9 +193,6 @@ export default function StlImport() {
   const [isPreviewLoading, setIsPreviewLoading] = useState(false)
   const [previewError, setPreviewError]         = useState<string | null>(null)
   const previewFingerprintRef  = useRef<string>('')
-  const handlePreviewRef      = useRef<() => void>(() => {})
-  const autoPreviewTimer      = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [autoPreviewPending, setAutoPreviewPending] = useState(false)
 
   // Start Print state
   const [isPrinting, setIsPrinting]       = useState(false)
@@ -499,9 +496,6 @@ export default function StlImport() {
     })
   }, [selectedModel, models, machineId, profileId, materialId, supportEnabled, supportType, supportPlacement, infillPattern, infillDensity])
 
-  // Keep handlePreviewRef current so the debounce timer always calls the latest version
-  useEffect(() => { handlePreviewRef.current = handlePreview })
-
   // Clear preview whenever slicing inputs change from what was last previewed
   useEffect(() => {
     if (currentFingerprint !== previewFingerprintRef.current) {
@@ -509,23 +503,6 @@ export default function StlImport() {
       setPreviewError(null)
     }
   }, [currentFingerprint]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Auto-preview: 1.5 s after settings stop changing, re-slice through Cura automatically
-  useEffect(() => {
-    if (!currentFingerprint) return                                  // nothing loaded yet
-    if (currentFingerprint === previewFingerprintRef.current) return // preview is already up-to-date
-    if (!canPreview) return                                          // not ready (loading / missing fields)
-    if (autoPreviewTimer.current) clearTimeout(autoPreviewTimer.current)
-    setAutoPreviewPending(true)
-    autoPreviewTimer.current = setTimeout(() => {
-      setAutoPreviewPending(false)
-      handlePreviewRef.current()
-    }, 1500)
-    return () => {
-      if (autoPreviewTimer.current) clearTimeout(autoPreviewTimer.current)
-      setAutoPreviewPending(false)
-    }
-  }, [currentFingerprint, canPreview]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Machine profile modal helpers ─────────────────────────────────────────
 
@@ -695,13 +672,13 @@ export default function StlImport() {
       </div>
 
       {/* Slicing status indicator (while slicing for preview) */}
-      {(isPreviewLoading || autoPreviewPending) && (
+      {isPreviewLoading && (
         <div className="bg-gray-950 rounded-xl border border-gray-700 flex-shrink-0 h-10 flex items-center justify-center gap-2 text-gray-500 text-sm">
           <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
           </svg>
-          {isPreviewLoading ? 'Slicing for preview…' : 'Settings changed — re-slicing in a moment…'}
+          Slicing…
         </div>
       )}
       {previewError && (

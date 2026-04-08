@@ -102,7 +102,15 @@ try
     app.UseCors();
 
     // Serve the built React SPA (placed in wwwroot by Vite build)
-    app.UseStaticFiles();
+    // HTML files must not be cached so the browser always picks up new hashed asset filenames
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        OnPrepareResponse = ctx =>
+        {
+            if (ctx.File.Name.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
+                ctx.Context.Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+        }
+    });
 
     app.UseAuthorization();
     app.MapControllers();
