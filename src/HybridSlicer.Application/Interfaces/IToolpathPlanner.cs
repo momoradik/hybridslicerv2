@@ -67,7 +67,17 @@ public sealed record ToolpathRequest(
 public sealed record ToolpathResult(
     string GCode,
     bool IsEmpty,
-    IReadOnlyList<BoundingBox2D> ToolpathBounds);
+    IReadOnlyList<BoundingBox2D> ToolpathBounds,
+    IReadOnlyList<UnmachinableRegion>? UnmachinableRegions = null);
+
+/// <summary>
+/// Describes a region that could not be machined and the reason why.
+/// </summary>
+public sealed record UnmachinableRegion(
+    double ZHeightMm,
+    /// <summary>"ToolTooWide" | "FluteTooShort" | "SupportBlocked"</summary>
+    string Reason,
+    BoundingBox2D Bounds);
 
 public sealed record BoundingBox2D(
     double MinX, double MinY,

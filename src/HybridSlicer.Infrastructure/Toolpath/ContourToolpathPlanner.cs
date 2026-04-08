@@ -3,6 +3,7 @@ using HybridSlicer.Application.Interfaces;
 using HybridSlicer.Domain.ValueObjects;
 using Microsoft.Extensions.Logging;
 using NetTopologySuite.Geometries;
+// UnmachinableRegion is defined in HybridSlicer.Application.Interfaces (IToolpathPlanner.cs)
 
 namespace HybridSlicer.Infrastructure.Toolpath;
 
@@ -46,7 +47,7 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
             request.SupportClearanceMm);
 
         if (request.WallPaths.Count == 0)
-            return new ToolpathResult(string.Empty, true, []);
+            return new ToolpathResult(string.Empty, true, [], []);
 
         // CRC offset: tool_radius + nozzle_radius
         // Outward (+) for outer walls; inward (−) for inner walls (pockets/holes)
@@ -92,8 +93,12 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
                 _logger.LogDebug("Forbidden zone built: {Area:F1} mm² at Z={Z}", forbiddenZone.Area, request.ZHeightMm);
         }
 
-        var gcodeBuilder = new StringBuilder();
-        var allBounds    = new List<BoundingBox2D>();
+        var gcodeBuilder       = new StringBuilder();
+        var allBounds          = new List<BoundingBox2D>();
+        var unmachinableRegions = new List<UnmachinableRegion>();
+
+        // Minimum area threshold below which a compensated geometry is considered degenerate
+        const double MinAreaMm2 = 0.01;
 
         // Process each wall path segment independently
         foreach (var seg in request.WallPaths)
@@ -103,6 +108,12 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
             // Build geometry: try closed polygon first, fall back to open linestring
             var geom = BuildGeometry(seg);
             if (geom is null || geom.IsEmpty) continue;
+
+            // Capture original bounding box for unmachinable region reporting
+            var origEnv = geom.EnvelopeInternal;
+            var segBounds = new BoundingBox2D(
+                origEnv.MinX + dx, origEnv.MinY + dy,
+                origEnv.MaxX + dx, origEnv.MaxY + dy);
 
             // Apply cutter-radius compensation via NTS buffer
             Geometry compensated;
@@ -116,7 +127,15 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
                 continue;
             }
 
-            if (compensated is null || compensated.IsEmpty) continue;
+            // Detect ToolTooWide: compensated result is empty or has negligible area
+            if (compensated is null || compensated.IsEmpty || compensated.Area < MinAreaMm2)
+            {
+                _logger.LogDebug(
+                    "Segment at Z={Z} too narrow for tool Ø{D} mm — ToolTooWide",
+                    request.ZHeightMm, request.ToolDiameterMm);
+                unmachinableRegions.Add(new UnmachinableRegion(request.ZHeightMm, "ToolTooWide", segBounds));
+                continue;
+            }
 
             // Subtract support forbidden zone from milling area
             if (forbiddenZone is not null)
@@ -132,7 +151,8 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
 
                 if (compensated is null || compensated.IsEmpty)
                 {
-                    _logger.LogDebug("Segment at Z={Z} fully inside forbidden zone — skipped", request.ZHeightMm);
+                    _logger.LogDebug("Segment at Z={Z} fully inside forbidden zone — SupportBlocked", request.ZHeightMm);
+                    unmachinableRegions.Add(new UnmachinableRegion(request.ZHeightMm, "SupportBlocked", segBounds));
                     continue;
                 }
             }
@@ -157,8 +177,8 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
 
         var totalGCode = gcodeBuilder.ToString().Trim();
         return totalGCode.Length == 0
-            ? new ToolpathResult(string.Empty, true, [])
-            : new ToolpathResult(totalGCode, false, allBounds);
+            ? new ToolpathResult(string.Empty, true, [], unmachinableRegions)
+            : new ToolpathResult(totalGCode, false, allBounds, unmachinableRegions);
     }
 
     // ── Fallback: plan from STL cross-section ─────────────────────────────────
@@ -177,7 +197,7 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
         if (polygon is null || polygon.IsEmpty)
         {
             _logger.LogDebug("No STL geometry at Z={Z}", request.ZHeightMm);
-            return new ToolpathResult(string.Empty, true, []);
+            return new ToolpathResult(string.Empty, true, [], []);
         }
 
         var offsetDist  = request.ToolDiameterMm / 2.0;
@@ -197,7 +217,7 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
         var env    = compensated.EnvelopeInternal;
         var bounds = new BoundingBox2D(env.MinX + dx, env.MinY + dy, env.MaxX + dx, env.MaxY + dy);
 
-        return new ToolpathResult(gcode, false, [bounds]);
+        return new ToolpathResult(gcode, false, [bounds], []);
     }
 
     // ── Geometry helpers ──────────────────────────────────────────────────────

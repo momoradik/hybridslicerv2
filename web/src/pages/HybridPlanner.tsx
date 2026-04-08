@@ -6,31 +6,45 @@ import CncSimulation from '../components/viewer/CncSimulation'
 
 type Tab = 'config' | 'gcode' | 'preview3d' | 'simulation'
 
+interface UnmachinableRegion {
+  zHeightMm: number
+  reason: string
+  bounds: { minX: number; minY: number; maxX: number; maxY: number }
+}
+
 export default function HybridPlanner() {
   const qc = useQueryClient()
   const { data: jobs  = [] } = useQuery({ queryKey: ['jobs'],  queryFn: jobsApi.getAll })
   const { data: tools = [] } = useQuery({ queryKey: ['tools'], queryFn: toolsApi.getAll })
 
-  const [jobId,             setJobId]             = useState('')
-  const [toolId,            setToolId]            = useState('')
-  const [machineEveryN,     setMachineEveryN]     = useState(10)
-  const [machineInnerWalls,   setMachineInnerWalls]   = useState(false)
-  const [avoidSupports,       setAvoidSupports]       = useState(false)
-  const [supportClearanceMm,  setSupportClearanceMm]  = useState(2.0)
-  const [activeTab,         setActiveTab]         = useState<Tab>('config')
-  const [toolpathGCode,     setToolpathGCode]     = useState<string | null>(null)
-  const [printGCode,        setPrintGCode]        = useState<string | null>(null)
-  const [machinedLayers,    setMachinedLayers]    = useState<number[]>([])
+  const [jobId,                 setJobId]                 = useState('')
+  const [toolId,                setToolId]                = useState('')
+  const [machineEveryN,         setMachineEveryN]         = useState(10)
+  const [machineInnerWalls,     setMachineInnerWalls]     = useState(false)
+  const [avoidSupports,         setAvoidSupports]         = useState(false)
+  const [supportClearanceMm,    setSupportClearanceMm]    = useState(2.0)
+  const [autoMachiningFrequency, setAutoMachiningFrequency] = useState(false)
+  const [activeTab,             setActiveTab]             = useState<Tab>('config')
+  const [toolpathGCode,         setToolpathGCode]         = useState<string | null>(null)
+  const [printGCode,            setPrintGCode]            = useState<string | null>(null)
+  const [machinedLayers,        setMachinedLayers]        = useState<number[]>([])
+  const [unmachinableRegions,   setUnmachinableRegions]   = useState<UnmachinableRegion[]>([])
 
-  const readyJobs  = jobs.filter(j => j.status === 'SlicingComplete' || j.status === 'ToolpathsComplete')
-  const selectedJob = jobs.find(j => j.id === jobId)
+  const readyJobs   = jobs.filter(j => j.status === 'SlicingComplete' || j.status === 'ToolpathsComplete')
+  const selectedJob  = jobs.find(j => j.id === jobId)
+  const selectedTool = tools.find(t => t.id === toolId)
 
   const toolpathsMutation = useMutation({
     mutationFn: () =>
-      jobsApi.generateToolpaths(jobId, toolId, machineEveryN, machineInnerWalls, avoidSupports, supportClearanceMm),
+      jobsApi.generateToolpaths(
+        jobId, toolId, machineEveryN, machineInnerWalls, avoidSupports,
+        supportClearanceMm, autoMachiningFrequency
+      ),
     onSuccess: async (result: any) => {
       qc.invalidateQueries({ queryKey: ['jobs'] })
       if (result?.machinedAtLayers) setMachinedLayers(result.machinedAtLayers)
+      if (result?.unmachinableRegions) setUnmachinableRegions(result.unmachinableRegions)
+      else setUnmachinableRegions([])
       const gcode = await jobsApi.getToolpathGCode(jobId)
       setToolpathGCode(gcode)
       const pg = await jobsApi.getPrintGCode(jobId)
@@ -122,31 +136,61 @@ export default function HybridPlanner() {
               </select>
             </Field>
 
-            <Field label={`Machine every N layers (N = ${machineEveryN})`}>
-              <div className="flex items-center gap-2">
-                <input
-                  type="range"
-                  min={1} max={100} step={1}
-                  value={machineEveryN}
-                  onChange={e => setMachineEveryN(+e.target.value)}
-                  className="flex-1 accent-primary"
-                />
-                <input
-                  type="number"
-                  min={1} max={100}
-                  value={machineEveryN}
-                  onChange={e => setMachineEveryN(Math.max(1, Math.min(100, +e.target.value)))}
-                  className="input w-16 text-center"
-                />
+            {!autoMachiningFrequency && (
+              <Field label={`Machine every N layers (N = ${machineEveryN})`}>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={1} max={100} step={1}
+                    value={machineEveryN}
+                    onChange={e => setMachineEveryN(+e.target.value)}
+                    className="flex-1 accent-primary"
+                  />
+                  <input
+                    type="number"
+                    min={1} max={100}
+                    value={machineEveryN}
+                    onChange={e => setMachineEveryN(Math.max(1, Math.min(100, +e.target.value)))}
+                    className="input w-16 text-center"
+                  />
+                </div>
+                <div className="flex justify-between text-xs text-gray-500 mt-1">
+                  <span>Every layer</span><span>Every 100 layers</span>
+                </div>
+              </Field>
+            )}
+
+            {autoMachiningFrequency && selectedTool && (
+              <div className="bg-blue-950/40 border border-blue-800 rounded-lg px-3 py-2 text-xs text-blue-300">
+                With &Oslash;{selectedTool.diameterMm}mm tool (flute: {selectedTool.fluteLengthMm}mm): machines approx every{' '}
+                {selectedJob
+                  ? (() => {
+                      // Estimate interval based on 0.2mm default or known layer height
+                      const layerH = 0.2
+                      const interval = Math.floor((selectedTool.fluteLengthMm * 0.8) / layerH)
+                      return interval
+                    })()
+                  : '?'}{' '}
+                layers at 0.2mm/layer
               </div>
-              <div className="flex justify-between text-xs text-gray-500 mt-1">
-                <span>Every layer</span><span>Every 100 layers</span>
-              </div>
-            </Field>
+            )}
 
             {/* CNC options */}
             <div className="space-y-3 border border-gray-700 rounded-lg p-4">
               <p className="text-xs text-gray-400 font-medium uppercase tracking-wide">CNC Options</p>
+
+              <label className="flex items-center gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoMachiningFrequency}
+                  onChange={e => setAutoMachiningFrequency(e.target.checked)}
+                  className="w-4 h-4 accent-blue-500"
+                />
+                <div>
+                  <div className="text-sm text-gray-200">Auto Machining Frequency</div>
+                  <div className="text-xs text-gray-500">Machine only when lower geometry becomes unreachable (uses flute length)</div>
+                </div>
+              </label>
 
               <label className="flex items-center gap-3 cursor-pointer select-none">
                 <input
@@ -213,6 +257,22 @@ export default function HybridPlanner() {
                 {(toolpathsMutation.error as any)?.response?.data?.detail
                   ?? (toolpathsMutation.error as Error)?.message
                   ?? 'Toolpath generation failed'}
+              </div>
+            )}
+
+            {unmachinableRegions.length > 0 && (
+              <div className="bg-yellow-950/40 border border-yellow-700 rounded-lg px-3 py-2 text-xs text-yellow-300">
+                <div className="font-semibold mb-1">
+                  ⚠ {unmachinableRegions.length} region{unmachinableRegions.length !== 1 ? 's' : ''} could not be machined:{' '}
+                  {(() => {
+                    const counts: Record<string, number> = {}
+                    for (const r of unmachinableRegions) counts[r.reason] = (counts[r.reason] ?? 0) + 1
+                    return Object.entries(counts).map(([reason, count]) => `${count}× ${reason}`).join(', ')
+                  })()}
+                </div>
+                <div className="text-yellow-500">
+                  Check tool diameter vs. feature width, flute length vs. part height, and support clearance settings.
+                </div>
               </div>
             )}
 
@@ -291,7 +351,10 @@ export default function HybridPlanner() {
             <div className="flex gap-3 text-xs text-gray-500">
               <span><span className="text-cyan-400">■</span> Rapid (G0)</span>
               <span><span className="text-yellow-300">■</span> Cut (G1)</span>
-              <span><span className="text-orange-400">■</span> {machinedLayers.length} layers machined</span>
+              <span><span className="text-blue-400">■</span> Printed geometry</span>
+              <span><span className="text-orange-400">■</span> Support material</span>
+              <span><span className="text-red-400">■</span> Unmachinable</span>
+              <span className="text-gray-600">{machinedLayers.length} layers machined</span>
             </div>
           </div>
           <div className="bg-gray-950 rounded-xl border border-gray-700 overflow-hidden" style={{ height: '70vh' }}>
@@ -310,7 +373,8 @@ export default function HybridPlanner() {
           toolpathGCode={toolpathGCode}
           printGCode={printGCode}
           buildVolume={buildVolume}
-          toolDiameterMm={tools.find(t => t.id === toolId)?.diameterMm ?? 3}
+          toolDiameterMm={selectedTool?.diameterMm ?? 3}
+          unmachinableRegions={unmachinableRegions}
           className="flex-1"
         />
       )}

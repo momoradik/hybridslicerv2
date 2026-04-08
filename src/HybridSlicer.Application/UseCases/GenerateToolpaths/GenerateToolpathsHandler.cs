@@ -5,6 +5,7 @@ using HybridSlicer.Domain.Enums;
 using HybridSlicer.Domain.Exceptions;
 using MediatR;
 using Microsoft.Extensions.Logging;
+// UnmachinableRegion is defined in IToolpathPlanner.cs (HybridSlicer.Application.Interfaces)
 
 namespace HybridSlicer.Application.UseCases.GenerateToolpaths;
 
@@ -70,6 +71,12 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                 axialDepthMm, tool.MaxDepthOfCutMm,
                 cmd.MachineEveryNLayers, profile.LayerHeightMm);
 
+        // ── FluteTooShort global check ────────────────────────────────────────
+        // If the user's axial depth already exceeds the flute length, flag it immediately.
+        var globalFluteTooShort = tool.FluteLengthMm > 0
+            && axialDepthMm > tool.FluteLengthMm
+            && !cmd.AutoMachiningFrequency;
+
         // ── Parse Cura G-code for wall paths ─────────────────────────────────
         _logger.LogInformation("Parsing Cura G-code: {Path}", job.PrintGCodePath);
         var gcodeText = await File.ReadAllTextAsync(job.PrintGCodePath, ct);
@@ -85,24 +92,57 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
         job.MarkGeneratingToolpaths();
         await _jobs.UpdateAsync(job, ct);
 
-        var machinedLayers = new List<int>();
-        var gcodeBuilder   = new StringBuilder();
+        var machinedLayers      = new List<int>();
+        var allUnmachinableRegions = new List<UnmachinableRegion>();
+        var gcodeBuilder        = new StringBuilder();
         gcodeBuilder.AppendLine($"; CNC Toolpath G-code — Job: {job.Name}");
-        gcodeBuilder.AppendLine($"; Tool     : {tool.Name}  Ø{tool.DiameterMm} mm  Feed: {tool.RecommendedFeedMmPerMin} mm/min  RPM: {tool.RecommendedRpm}");
+        gcodeBuilder.AppendLine($"; Tool     : {tool.Name}  Ø{tool.DiameterMm} mm  Flute: {tool.FluteLengthMm} mm  Feed: {tool.RecommendedFeedMmPerMin} mm/min  RPM: {tool.RecommendedRpm}");
         gcodeBuilder.AppendLine($"; Nozzle   : Ø{profile.LineWidthMm} mm  Layer height: {profile.LayerHeightMm} mm");
-        gcodeBuilder.AppendLine($"; Interval : every {cmd.MachineEveryNLayers} layer(s)  Axial depth: {axialDepthMm:F3} mm");
-        gcodeBuilder.AppendLine($"; Options  : MachineInnerWalls={cmd.MachineInnerWalls}  AvoidSupports={cmd.AvoidSupports}  SupportClearance={cmd.SupportClearanceMm:F2} mm");
+        gcodeBuilder.AppendLine($"; Interval : {(cmd.AutoMachiningFrequency ? "AUTO (flute-based)" : $"every {cmd.MachineEveryNLayers} layer(s)")}  Axial depth: {axialDepthMm:F3} mm");
+        gcodeBuilder.AppendLine($"; Options  : MachineInnerWalls={cmd.MachineInnerWalls}  AvoidSupports={cmd.AvoidSupports}  SupportClearance={cmd.SupportClearanceMm:F2} mm  AutoFreq={cmd.AutoMachiningFrequency}");
         gcodeBuilder.AppendLine($"; CRC      : offset = tool_radius({tool.DiameterMm / 2:F3}) + nozzle_radius({profile.LineWidthMm / 2:F3}) = {(tool.DiameterMm + profile.LineWidthMm) / 2:F3} mm outward");
         gcodeBuilder.AppendLine($"; Source   : Cura WALL-OUTER paths (parsed from print.gcode)");
         gcodeBuilder.AppendLine($"; Generated: {DateTime.UtcNow:u}");
         gcodeBuilder.AppendLine();
 
+        // ── Compute which layers to machine ───────────────────────────────────
+        // Auto mode: machine when accumulated print height approaches flute reach limit.
+        // Manual mode: every N layers as configured.
+        IEnumerable<int> layersToMachine;
+        if (cmd.AutoMachiningFrequency && tool.FluteLengthMm > 0)
+        {
+            var autoLayers = new List<int>();
+            var safetyMargin = tool.FluteLengthMm * 0.8;
+            var lastMachinedZ = 0.0;
+            for (var layerIdx = 1; layerIdx <= job.TotalPrintLayers!.Value; layerIdx++)
+            {
+                var currentZ = layerIdx * profile.LayerHeightMm;
+                var pendingHeight = currentZ - lastMachinedZ;
+                if (pendingHeight >= safetyMargin)
+                {
+                    autoLayers.Add(layerIdx);
+                    lastMachinedZ = currentZ;
+                }
+            }
+            layersToMachine = autoLayers;
+            gcodeBuilder.AppendLine($"; AUTO machining: safety margin = {safetyMargin:F2} mm (flute {tool.FluteLengthMm} mm × 80%)");
+            gcodeBuilder.AppendLine($"; AUTO machining: {autoLayers.Count} layers selected");
+            gcodeBuilder.AppendLine();
+            _logger.LogInformation(
+                "Auto machining frequency: flute {F} mm, safety {S} mm → {Count} layers",
+                tool.FluteLengthMm, safetyMargin, autoLayers.Count);
+        }
+        else
+        {
+            layersToMachine = Enumerable.Range(1, (int)Math.Ceiling((double)job.TotalPrintLayers!.Value / cmd.MachineEveryNLayers))
+                .Select(i => i * cmd.MachineEveryNLayers)
+                .Where(l => l <= job.TotalPrintLayers!.Value);
+        }
+
         try
         {
             // Handler uses 1-based layer numbers; Cura uses 0-based
-            for (var layer = cmd.MachineEveryNLayers;
-                 layer <= job.TotalPrintLayers;
-                 layer += cmd.MachineEveryNLayers)
+            foreach (var layer in layersToMachine)
             {
                 var curaLayerIdx = layer - 1;   // convert to Cura 0-based index
                 var zHeight      = layer * profile.LayerHeightMm;
@@ -162,6 +202,17 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
 
                 var toolpath = await _planner.PlanFromWallPathsAsync(outerRequest, ct);
 
+                // Collect unmachinable regions from the outer toolpath
+                if (toolpath.UnmachinableRegions is { Count: > 0 })
+                    allUnmachinableRegions.AddRange(toolpath.UnmachinableRegions);
+
+                // Check FluteTooShort for this layer: pending depth should not exceed flute length
+                if (tool.FluteLengthMm > 0 && axialDepthMm > tool.FluteLengthMm)
+                {
+                    var env = new BoundingBox2D(0, 0, 0, 0);
+                    allUnmachinableRegions.Add(new UnmachinableRegion(zHeight, "FluteTooShort", env));
+                }
+
                 // Optionally add inner wall passes
                 ToolpathResult? innerToolpath = null;
                 if (cmd.MachineInnerWalls && layerData.InnerWallPaths.Count > 0)
@@ -172,6 +223,10 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                         IsOuterWall = false,
                     };
                     innerToolpath = await _planner.PlanFromWallPathsAsync(innerRequest, ct);
+
+                    // Collect unmachinable regions from inner toolpath
+                    if (innerToolpath.UnmachinableRegions is { Count: > 0 })
+                        allUnmachinableRegions.AddRange(innerToolpath.UnmachinableRegions);
                 }
 
                 if (toolpath.IsEmpty && (innerToolpath is null || innerToolpath.IsEmpty))
@@ -229,11 +284,10 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
             await _jobs.UpdateAsync(job, ct);
 
             _logger.LogInformation(
-                "Toolpath generation complete for {JobId}: {Count}/{Total} layers machined",
-                cmd.JobId, machinedLayers.Count,
-                (int)Math.Ceiling((double)job.TotalPrintLayers!.Value / cmd.MachineEveryNLayers));
+                "Toolpath generation complete for {JobId}: {Count} layers machined, {UR} unmachinable regions",
+                cmd.JobId, machinedLayers.Count, allUnmachinableRegions.Count);
 
-            return new GenerateToolpathsResult(cmd.JobId, machinedLayers.Count, machinedLayers);
+            return new GenerateToolpathsResult(cmd.JobId, machinedLayers.Count, machinedLayers, allUnmachinableRegions);
         }
         catch (Exception ex)
         {

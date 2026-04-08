@@ -5,11 +5,18 @@ import type { BuildVolume } from './StlViewer'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+interface UnmachinableRegion {
+  zHeightMm: number
+  reason: string
+  bounds: { minX: number; minY: number; maxX: number; maxY: number }
+}
+
 interface Props {
   toolpathGCode: string
   printGCode: string
   buildVolume: BuildVolume
   toolDiameterMm?: number
+  unmachinableRegions?: UnmachinableRegion[]
   className?: string
 }
 
@@ -161,7 +168,8 @@ function fmtTime(sec: number): string {
 const SPEEDS = [1, 2, 5, 10, 20, 50]
 
 export default function CncSimulation({
-  toolpathGCode, printGCode, buildVolume, toolDiameterMm = 3, className,
+  toolpathGCode, printGCode, buildVolume, toolDiameterMm = 3,
+  unmachinableRegions = [], className,
 }: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
 
@@ -257,6 +265,38 @@ export default function CncSimulation({
     // ── Printed part (static) ─────────────────────────────────────────────
     if (printSegs.length > 0)
       buildPrintMesh(printSegs, 0.4, scene)
+
+    // ── Unmachinable regions (always-visible red boxes) ───────────────────
+    if (unmachinableRegions.length > 0) {
+      const unmachMat = new THREE.MeshBasicMaterial({
+        color: 0xff2222,
+        transparent: true,
+        opacity: 0.28,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      })
+      const unmachEdgeMat = new THREE.LineBasicMaterial({ color: 0xff4444 })
+      for (const r of unmachinableRegions) {
+        const bx = r.bounds.minX, by = r.bounds.minY, bX = r.bounds.maxX, bY = r.bounds.maxY
+        // Skip degenerate zero-area bounds (e.g. FluteTooShort placeholders)
+        if (Math.abs(bX - bx) < 0.001 && Math.abs(bY - by) < 0.001) continue
+        const w = Math.abs(bX - bx) || 1
+        const d = Math.abs(bY - by) || 1
+        const h = 1  // flat slab 1mm thick
+        const cx = (bx + bX) / 2
+        const cy = (by + bY) / 2
+        // Three.js Y-up: part Z→Y, part Y→Z
+        const boxGeo = new THREE.BoxGeometry(w, h, d)
+        const boxMesh = new THREE.Mesh(boxGeo, unmachMat)
+        // position: x=cx, y=zHeight (three-js Y), z=cy (three-js Z)
+        boxMesh.position.set(cx, r.zHeightMm, cy)
+        scene.add(boxMesh)
+        const edgesGeo = new THREE.EdgesGeometry(boxGeo)
+        const edgeLines = new THREE.LineSegments(edgesGeo, unmachEdgeMat)
+        edgeLines.position.copy(boxMesh.position)
+        scene.add(edgeLines)
+      }
+    }
 
     // ── Toolpath trace pre-allocated geometry ─────────────────────────────
     const numMoves = moves.length
@@ -363,7 +403,7 @@ export default function CncSimulation({
       traceGeoRef.current = null
       cursorGeoRef.current = null
     }
-  }, [toolpathGCode, printGCode, buildVolume, toolDiameterMm]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [toolpathGCode, printGCode, buildVolume, toolDiameterMm, unmachinableRegions]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Sync speed ref ─────────────────────────────────────────────────────────
   useEffect(() => { stateRef.current.speed = SPEEDS[speed] }, [speed])
@@ -465,12 +505,19 @@ export default function CncSimulation({
 
   return (
     <div className={`flex flex-col gap-3 ${className ?? ''}`}>
-      {/* Info bar */}
-      <div className="flex flex-wrap items-center gap-4 text-xs text-gray-400">
-        <span><span className="text-blue-400">■</span> Part</span>
-        <span><span className="text-orange-400">■</span> Support</span>
-        <span><span className="text-green-400">■</span> Cut move</span>
-        <span><span className="text-red-400">■</span> Rapid move</span>
+      {/* Legend / Info bar */}
+      <div className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 flex flex-wrap items-center gap-4 text-xs text-gray-400">
+        <span className="font-medium text-gray-300 mr-1">Legend:</span>
+        <span><span className="inline-block w-3 h-3 rounded-sm bg-yellow-400 mr-1"></span>Rapid (G0)</span>
+        <span><span className="inline-block w-3 h-3 rounded-sm bg-cyan-400 mr-1"></span>Cut (G1)</span>
+        <span><span className="inline-block w-3 h-3 rounded-sm bg-blue-600 mr-1"></span>Printed</span>
+        <span><span className="inline-block w-3 h-3 rounded-sm bg-orange-500 mr-1"></span>Support</span>
+        {unmachinableRegions.length > 0 && (
+          <span className="text-red-400">
+            <span className="inline-block w-3 h-3 rounded-sm bg-red-600 mr-1 opacity-70"></span>
+            Unmachinable ({unmachinableRegions.length})
+          </span>
+        )}
         <span><span className="text-yellow-300">■</span> Tool tip</span>
         <span className="ml-auto text-gray-500">
           {moves.length} moves · machining time: {fmtTime(estimatedMachiningSec)} · setup est: ~{setupEstimateSec}s
