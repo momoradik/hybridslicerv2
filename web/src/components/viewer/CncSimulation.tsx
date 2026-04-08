@@ -21,8 +21,8 @@ interface Props {
 }
 
 interface SimMove {
-  tx0: number; ty0: number; tz0: number  // Three.js coords (from)
-  tx1: number; ty1: number; tz1: number  // Three.js coords (to)
+  tx0: number; ty0: number; tz0: number
+  tx1: number; ty1: number; tz1: number
   isRapid: boolean
   durationSec: number
 }
@@ -33,6 +33,8 @@ interface PrintSegment {
   isSupport: boolean
 }
 
+type VisKey = 'rapid' | 'cut' | 'printed' | 'support' | 'unmachinable'
+
 // ── Parse CNC G-code ──────────────────────────────────────────────────────────
 
 function parseCncMoves(gcode: string): { moves: SimMove[]; estimatedMachiningSec: number } {
@@ -41,7 +43,7 @@ function parseCncMoves(gcode: string): { moves: SimMove[]; estimatedMachiningSec
   let feed = 800
   let hasPos = false
   let totalTimeSec = 0
-  const RAPID_SPEED = 6000  // mm/min for G0
+  const RAPID_SPEED = 6000
 
   for (const raw of gcode.split('\n')) {
     const line = raw.split(';')[0].trim()
@@ -86,7 +88,7 @@ function parseCncMoves(gcode: string): { moves: SimMove[]; estimatedMachiningSec
   return { moves, estimatedMachiningSec: totalTimeSec }
 }
 
-// ── Parse print G-code for part mesh ─────────────────────────────────────────
+// ── Parse print G-code ────────────────────────────────────────────────────────
 
 function parsePrintSegments(gcode: string): PrintSegment[] {
   const segs: PrintSegment[] = []
@@ -105,7 +107,8 @@ function parsePrintSegments(gcode: string): PrintSegment[] {
     if (up.startsWith('G92')) { const m = up.match(/E([+-]?[\d.]+)/); if (m) e = parseFloat(m[1]); continue }
     if (!up.startsWith('G0') && !up.startsWith('G1')) continue
 
-    const xm = up.match(/X([+-]?[\d.]+)/), ym = up.match(/Y([+-]?[\d.]+)/), zm = up.match(/Z([+-]?[\d.]+)/), em = up.match(/E([+-]?[\d.]+)/)
+    const xm = up.match(/X([+-]?[\d.]+)/), ym = up.match(/Y([+-]?[\d.]+)/)
+    const zm = up.match(/Z([+-]?[\d.]+)/), em = up.match(/E([+-]?[\d.]+)/)
     const nx = xm ? parseFloat(xm[1]) : x
     const ny = ym ? parseFloat(ym[1]) : y
     const nz = zm ? parseFloat(zm[1]) : z
@@ -121,16 +124,17 @@ function parsePrintSegments(gcode: string): PrintSegment[] {
 
 // ── Build InstancedMesh for print segments ────────────────────────────────────
 
-function buildPrintMesh(segs: PrintSegment[], lineWidth: number, scene: THREE.Scene): THREE.InstancedMesh[] {
+function buildPrintMesh(segs: PrintSegment[], lineWidth: number, scene: THREE.Scene): [THREE.InstancedMesh | null, THREE.InstancedMesh | null] {
   const BEAD_SEGS = 5
   const cylGeo = new THREE.CylinderGeometry(lineWidth / 2, lineWidth / 2, 1, BEAD_SEGS)
   const yAxis = new THREE.Vector3(0, 1, 0)
   const dummy = new THREE.Object3D()
   const dir = new THREE.Vector3()
 
-  function makeMesh(filtered: PrintSegment[], color: number): THREE.InstancedMesh {
+  function makeMesh(filtered: PrintSegment[], color: number): THREE.InstancedMesh | null {
+    if (filtered.length === 0) return null
     const mat = new THREE.MeshPhongMaterial({ color, transparent: true, opacity: 0.55, specular: 0x111111 })
-    const mesh = new THREE.InstancedMesh(cylGeo, mat, Math.max(filtered.length, 1))
+    const mesh = new THREE.InstancedMesh(cylGeo, mat, filtered.length)
     mesh.frustumCulled = false
     for (let i = 0; i < filtered.length; i++) {
       const { x0, y0, z0, x1, y1, z1 } = filtered[i]
@@ -147,18 +151,16 @@ function buildPrintMesh(segs: PrintSegment[], lineWidth: number, scene: THREE.Sc
     return mesh
   }
 
-  const modelSegs = segs.filter(s => !s.isSupport)
-  const suppSegs  = segs.filter(s =>  s.isSupport)
-  const meshes: THREE.InstancedMesh[] = []
-  if (modelSegs.length > 0) meshes.push(makeMesh(modelSegs, 0x1e40af))
-  if (suppSegs.length  > 0) meshes.push(makeMesh(suppSegs,  0xf97316))
-  return meshes
+  return [
+    makeMesh(segs.filter(s => !s.isSupport), 0x1e40af),
+    makeMesh(segs.filter(s =>  s.isSupport), 0xf97316),
+  ]
 }
 
 // ── Format seconds ────────────────────────────────────────────────────────────
 
 function fmtTime(sec: number): string {
-  if (sec < 60)  return `${Math.round(sec)}s`
+  if (sec < 60)   return `${Math.round(sec)}s`
   if (sec < 3600) return `${Math.floor(sec/60)}m ${Math.round(sec%60)}s`
   return `${Math.floor(sec/3600)}h ${Math.floor((sec%3600)/60)}m`
 }
@@ -167,51 +169,71 @@ function fmtTime(sec: number): string {
 
 const SPEEDS = [1, 2, 5, 10, 20, 50]
 
+const LEGEND_ITEMS: { key: VisKey; label: string; color: string }[] = [
+  { key: 'rapid',        label: 'Rapid (G0)', color: 'bg-yellow-400' },
+  { key: 'cut',          label: 'Cut (G1)',   color: 'bg-cyan-400'   },
+  { key: 'printed',      label: 'Printed',    color: 'bg-blue-600'   },
+  { key: 'support',      label: 'Support',    color: 'bg-orange-500' },
+  { key: 'unmachinable', label: 'Unmachinable', color: 'bg-red-600'  },
+]
+
 export default function CncSimulation({
   toolpathGCode, printGCode, buildVolume, toolDiameterMm = 3,
   unmachinableRegions = [], className,
 }: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
 
-  const [playing, setPlaying] = useState(false)
-  const [speed, setSpeed]     = useState(5)     // index into SPEEDS
-  const [progress, setProgress] = useState(0)   // 0-1
-  const [ended, setEnded]     = useState(false)
+  const [playing,   setPlaying]   = useState(false)
+  const [speed,     setSpeed]     = useState(4)
+  const [progress,  setProgress]  = useState(0)
+  const [ended,     setEnded]     = useState(false)
+  const [vis, setVis] = useState<Record<VisKey, boolean>>({
+    rapid: true, cut: true, printed: true, support: true, unmachinable: true,
+  })
 
-  // Animation state lives in refs to avoid stale closures
-  const stateRef = useRef({ playing: false, speed: 5, moveIdx: 0, segProg: 0, lastTs: 0 })
+  const stateRef = useRef({ playing: false, speed: SPEEDS[4], moveIdx: 0, segProg: 0, lastTs: 0 })
   const rafRef   = useRef(0)
 
   // Three.js object refs
-  const rendererRef  = useRef<THREE.WebGLRenderer | null>(null)
-  const sceneRef     = useRef<THREE.Scene | null>(null)
-  const cameraRef    = useRef<THREE.PerspectiveCamera | null>(null)
-  const controlsRef  = useRef<OrbitControls | null>(null)
-  const toolGroupRef = useRef<THREE.Group | null>(null)
-  const traceGeoRef  = useRef<THREE.BufferGeometry | null>(null)
-  const cursorGeoRef = useRef<THREE.BufferGeometry | null>(null)
-  const movesRef     = useRef<SimMove[]>([])
+  const rendererRef    = useRef<THREE.WebGLRenderer | null>(null)
+  const sceneRef       = useRef<THREE.Scene | null>(null)
+  const cameraRef      = useRef<THREE.PerspectiveCamera | null>(null)
+  const controlsRef    = useRef<OrbitControls | null>(null)
+  const toolGroupRef   = useRef<THREE.Group | null>(null)
+  const rapidLinesRef  = useRef<THREE.LineSegments | null>(null)
+  const cutLinesRef    = useRef<THREE.LineSegments | null>(null)
+  const cursorGeoRef   = useRef<THREE.BufferGeometry | null>(null)
+  const printedMeshRef = useRef<THREE.InstancedMesh | null>(null)
+  const supportMeshRef = useRef<THREE.InstancedMesh | null>(null)
+  const unmachGroupRef = useRef<THREE.Group | null>(null)
+  const movesRef       = useRef<SimMove[]>([])
 
-  // Parse data once
+  // Cumulative rapid/cut counts per move index (for per-type draw range)
+  const rapidCumRef = useRef<Int32Array>(new Int32Array(0))
+  const cutCumRef   = useRef<Int32Array>(new Int32Array(0))
+
   const { moves, estimatedMachiningSec } = useMemo(() => parseCncMoves(toolpathGCode), [toolpathGCode])
   const printSegs = useMemo(() => parsePrintSegments(printGCode), [printGCode])
-
-  // Estimate parse/setup time for display
   const setupEstimateSec = useMemo(() => Math.max(1, Math.ceil((moves.length + printSegs.length) / 8000)), [moves.length, printSegs.length])
+
+  // ── Visibility toggle effects ───────────────────────────────────────────────
+  useEffect(() => { if (rapidLinesRef.current)  rapidLinesRef.current.visible  = vis.rapid        }, [vis.rapid])
+  useEffect(() => { if (cutLinesRef.current)    cutLinesRef.current.visible    = vis.cut          }, [vis.cut])
+  useEffect(() => { if (printedMeshRef.current) printedMeshRef.current.visible = vis.printed      }, [vis.printed])
+  useEffect(() => { if (supportMeshRef.current) supportMeshRef.current.visible = vis.support      }, [vis.support])
+  useEffect(() => { if (unmachGroupRef.current) unmachGroupRef.current.visible = vis.unmachinable }, [vis.unmachinable])
 
   // ── Build Three.js scene ────────────────────────────────────────────────────
   useEffect(() => {
     const el = mountRef.current
     if (!el) return
 
-    // Cleanup previous
     cancelAnimationFrame(rafRef.current)
     controlsRef.current?.dispose()
     rendererRef.current?.dispose()
     if (rendererRef.current?.domElement && el.contains(rendererRef.current.domElement))
       el.removeChild(rendererRef.current.domElement)
 
-    // Reset state
     stateRef.current = { playing: false, speed: SPEEDS[4], moveIdx: 0, segProg: 0, lastTs: 0 }
     setPlaying(false); setProgress(0); setEnded(false)
     movesRef.current = moves
@@ -241,20 +263,18 @@ export default function CncSimulation({
     controls.dampingFactor = 0.1
     controlsRef.current = controls
 
-    // ── Bed ──────────────────────────────────────────────────────────────
+    // ── Bed ───────────────────────────────────────────────────────────────
     const bw = buildVolume.width, bd = buildVolume.depth
     const hw = bw / 2, hd = bd / 2
-    const bedPts = [
-      new THREE.Vector3(-hw,0,-hd), new THREE.Vector3(hw,0,-hd),
-      new THREE.Vector3(hw,0,-hd),  new THREE.Vector3(hw,0,hd),
-      new THREE.Vector3(hw,0,hd),   new THREE.Vector3(-hw,0,hd),
-      new THREE.Vector3(-hw,0,hd),  new THREE.Vector3(-hw,0,-hd),
-    ]
     scene.add(new THREE.LineSegments(
-      new THREE.BufferGeometry().setFromPoints(bedPts),
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-hw,0,-hd), new THREE.Vector3(hw,0,-hd),
+        new THREE.Vector3(hw,0,-hd),  new THREE.Vector3(hw,0,hd),
+        new THREE.Vector3(hw,0,hd),   new THREE.Vector3(-hw,0,hd),
+        new THREE.Vector3(-hw,0,hd),  new THREE.Vector3(-hw,0,-hd),
+      ]),
       new THREE.LineBasicMaterial({ color: 0x1e293b }),
     ))
-    // Bed surface (semi-transparent)
     const bedMesh = new THREE.Mesh(
       new THREE.PlaneGeometry(bw, bd),
       new THREE.MeshStandardMaterial({ color: 0x0f172a, transparent: true, opacity: 0.4, side: THREE.DoubleSide }),
@@ -263,100 +283,119 @@ export default function CncSimulation({
     scene.add(bedMesh)
 
     // ── Printed part (static) ─────────────────────────────────────────────
-    if (printSegs.length > 0)
-      buildPrintMesh(printSegs, 0.4, scene)
+    if (printSegs.length > 0) {
+      const [pm, sm] = buildPrintMesh(printSegs, 0.4, scene)
+      printedMeshRef.current = pm
+      supportMeshRef.current = sm
+      if (pm) pm.visible = vis.printed
+      if (sm) sm.visible = vis.support
+    }
 
-    // ── Unmachinable regions (always-visible red boxes) ───────────────────
+    // ── Unmachinable regions (semi-transparent red boxes) ─────────────────
+    const unmachGroup = new THREE.Group()
+    unmachGroupRef.current = unmachGroup
     if (unmachinableRegions.length > 0) {
       const unmachMat = new THREE.MeshBasicMaterial({
-        color: 0xff2222,
-        transparent: true,
-        opacity: 0.28,
-        side: THREE.DoubleSide,
-        depthWrite: false,
+        color: 0xff2222, transparent: true, opacity: 0.28,
+        side: THREE.DoubleSide, depthWrite: false,
       })
       const unmachEdgeMat = new THREE.LineBasicMaterial({ color: 0xff4444 })
       for (const r of unmachinableRegions) {
-        const bx = r.bounds.minX, by = r.bounds.minY, bX = r.bounds.maxX, bY = r.bounds.maxY
-        // Skip degenerate zero-area bounds (e.g. FluteTooShort placeholders)
+        const { minX: bx, minY: by, maxX: bX, maxY: bY } = r.bounds
         if (Math.abs(bX - bx) < 0.001 && Math.abs(bY - by) < 0.001) continue
-        const w = Math.abs(bX - bx) || 1
-        const d = Math.abs(bY - by) || 1
-        const h = 1  // flat slab 1mm thick
-        const cx = (bx + bX) / 2
-        const cy = (by + bY) / 2
-        // Three.js Y-up: part Z→Y, part Y→Z
-        const boxGeo = new THREE.BoxGeometry(w, h, d)
+        const rw = Math.abs(bX - bx) || 1
+        const rd = Math.abs(bY - by) || 1
+        const boxGeo  = new THREE.BoxGeometry(rw, 1, rd)
         const boxMesh = new THREE.Mesh(boxGeo, unmachMat)
-        // position: x=cx, y=zHeight (three-js Y), z=cy (three-js Z)
-        boxMesh.position.set(cx, r.zHeightMm, cy)
-        scene.add(boxMesh)
-        const edgesGeo = new THREE.EdgesGeometry(boxGeo)
-        const edgeLines = new THREE.LineSegments(edgesGeo, unmachEdgeMat)
+        boxMesh.position.set((bx + bX) / 2, r.zHeightMm, (by + bY) / 2)
+        unmachGroup.add(boxMesh)
+        const edgeLines = new THREE.LineSegments(new THREE.EdgesGeometry(boxGeo), unmachEdgeMat)
         edgeLines.position.copy(boxMesh.position)
-        scene.add(edgeLines)
+        unmachGroup.add(edgeLines)
       }
     }
+    unmachGroup.visible = vis.unmachinable
+    scene.add(unmachGroup)
 
-    // ── Toolpath trace pre-allocated geometry ─────────────────────────────
+    // ── Toolpath traces — separate rapid (yellow) and cut (cyan) ─────────
     const numMoves = moves.length
     if (numMoves > 0) {
-      const positions = new Float32Array(numMoves * 6)
-      const colors    = new Float32Array(numMoves * 6)
+      // Precompute cumulative rapid/cut counts per move index
+      const rapidCum = new Int32Array(numMoves + 1)
+      const cutCum   = new Int32Array(numMoves + 1)
+      let rCount = 0, cCount = 0
       for (let i = 0; i < numMoves; i++) {
-        const m = moves[i]
-        const b = i * 6
-        positions[b]   = m.tx0; positions[b+1] = m.ty0; positions[b+2] = m.tz0
-        positions[b+3] = m.tx1; positions[b+4] = m.ty1; positions[b+5] = m.tz1
-        const r = m.isRapid ? 0.9 : 0.15
-        const g = m.isRapid ? 0.2 : 0.85
-        const bl = m.isRapid ? 0.15 : 0.2
-        colors[b]=r; colors[b+1]=g; colors[b+2]=bl
-        colors[b+3]=r; colors[b+4]=g; colors[b+5]=bl
+        rapidCum[i] = rCount; cutCum[i] = cCount
+        if (moves[i].isRapid) rCount++; else cCount++
       }
-      const traceGeo = new THREE.BufferGeometry()
-      traceGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-      traceGeo.setAttribute('color',    new THREE.BufferAttribute(colors, 3))
-      traceGeo.setDrawRange(0, 0)
-      traceGeoRef.current = traceGeo
-      scene.add(new THREE.LineSegments(traceGeo, new THREE.LineBasicMaterial({ vertexColors: true })))
+      rapidCum[numMoves] = rCount; cutCum[numMoves] = cCount
+      rapidCumRef.current = rapidCum
+      cutCumRef.current   = cutCum
 
-      // Cursor line (current in-progress move, white)
+      // Rapid lines (yellow)
+      const rapidPos = new Float32Array(rCount * 6)
+      let ri = 0
+      for (const m of moves) {
+        if (!m.isRapid) continue
+        rapidPos[ri*6]=m.tx0; rapidPos[ri*6+1]=m.ty0; rapidPos[ri*6+2]=m.tz0
+        rapidPos[ri*6+3]=m.tx1; rapidPos[ri*6+4]=m.ty1; rapidPos[ri*6+5]=m.tz1
+        ri++
+      }
+      const rapidGeo = new THREE.BufferGeometry()
+      rapidGeo.setAttribute('position', new THREE.BufferAttribute(rapidPos, 3))
+      rapidGeo.setDrawRange(0, 0)
+      const rapidLines = new THREE.LineSegments(rapidGeo, new THREE.LineBasicMaterial({ color: 0xfacc15 }))
+      rapidLines.visible = vis.rapid
+      scene.add(rapidLines)
+      rapidLinesRef.current = rapidLines
+
+      // Cut lines (cyan)
+      const cutPos = new Float32Array(cCount * 6)
+      let ci = 0
+      for (const m of moves) {
+        if (m.isRapid) continue
+        cutPos[ci*6]=m.tx0; cutPos[ci*6+1]=m.ty0; cutPos[ci*6+2]=m.tz0
+        cutPos[ci*6+3]=m.tx1; cutPos[ci*6+4]=m.ty1; cutPos[ci*6+5]=m.tz1
+        ci++
+      }
+      const cutGeo = new THREE.BufferGeometry()
+      cutGeo.setAttribute('position', new THREE.BufferAttribute(cutPos, 3))
+      cutGeo.setDrawRange(0, 0)
+      const cutLines = new THREE.LineSegments(cutGeo, new THREE.LineBasicMaterial({ color: 0x22d3ee }))
+      cutLines.visible = vis.cut
+      scene.add(cutLines)
+      cutLinesRef.current = cutLines
+
+      // Cursor line (white, current in-progress segment)
       const cursorGeo = new THREE.BufferGeometry()
-      const cursorPos = new Float32Array([0,0,0, 0,0,0])
-      cursorGeo.setAttribute('position', new THREE.BufferAttribute(cursorPos, 3))
+      cursorGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0,0,0,0,0,0]), 3))
       cursorGeoRef.current = cursorGeo
       scene.add(new THREE.Line(cursorGeo, new THREE.LineBasicMaterial({ color: 0xffffff })))
     }
 
     // ── CNC Tool ──────────────────────────────────────────────────────────
     const toolRadius = toolDiameterMm / 2
-    const shaftH     = Math.max(toolDiameterMm * 7, 20)
-    const coneH      = toolRadius * 1.5
-    const toolMat    = new THREE.MeshPhongMaterial({ color: 0xd1d5db, specular: 0x888888, shininess: 120 })
-    const tipMat     = new THREE.MeshPhongMaterial({ color: 0xfbbf24, specular: 0xffffff, shininess: 200 })
-
+    const shaftH = Math.max(toolDiameterMm * 7, 20)
+    const coneH  = toolRadius * 1.5
     const toolGroup = new THREE.Group()
-    const shaftGeo  = new THREE.CylinderGeometry(toolRadius, toolRadius, shaftH, 10)
-    const shaftMesh = new THREE.Mesh(shaftGeo, toolMat)
-    shaftMesh.position.y = shaftH / 2    // tip at y=0, shaft extends up
+    const shaftMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(toolRadius, toolRadius, shaftH, 10),
+      new THREE.MeshPhongMaterial({ color: 0xd1d5db, specular: 0x888888, shininess: 120 }),
+    )
+    shaftMesh.position.y = shaftH / 2
     toolGroup.add(shaftMesh)
-
-    const coneGeo  = new THREE.ConeGeometry(toolRadius, coneH, 10)
-    const coneMesh = new THREE.Mesh(coneGeo, tipMat)
-    coneMesh.position.y = -coneH / 2   // tip at y=0, cone points down
+    const coneMesh = new THREE.Mesh(
+      new THREE.ConeGeometry(toolRadius, coneH, 10),
+      new THREE.MeshPhongMaterial({ color: 0xfbbf24, specular: 0xffffff, shininess: 200 }),
+    )
+    coneMesh.position.y = -coneH / 2
     coneMesh.rotation.z = Math.PI
     toolGroup.add(coneMesh)
-
-    // Start tool at first move position
-    if (moves.length > 0) {
-      const m0 = moves[0]
-      toolGroup.position.set(m0.tx0, m0.ty0, m0.tz0)
-    }
+    if (moves.length > 0) toolGroup.position.set(moves[0].tx0, moves[0].ty0, moves[0].tz0)
     scene.add(toolGroup)
     toolGroupRef.current = toolGroup
 
-    // ── Camera position ────────────────────────────────────────────────────
+    // ── Camera ────────────────────────────────────────────────────────────
     const box = new THREE.Box3()
     for (const m of moves) {
       box.expandByPoint(new THREE.Vector3(m.tx0, m.ty0, m.tz0))
@@ -367,21 +406,17 @@ export default function CncSimulation({
       box.expandByPoint(new THREE.Vector3(s.x1, s.y1, s.z1))
     }
     const hasData = moves.length > 0 || printSegs.length > 0
-    const center  = hasData ? box.getCenter(new THREE.Vector3()) : new THREE.Vector3(0, 0, 0)
-    const span    = hasData ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(bw, 100, bd)
-    const d = Math.max(span.x, span.y, span.z, bw * 0.5) * 1.8
-    camera.position.set(center.x - d * 0.3, center.y + d * 0.7, center.z + d)
+    const center = hasData ? box.getCenter(new THREE.Vector3()) : new THREE.Vector3(0, 0, 0)
+    const span   = hasData ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(bw, 100, bd)
+    const dist   = Math.max(span.x, span.y, span.z, bw * 0.5) * 1.8
+    camera.position.set(center.x - dist * 0.3, center.y + dist * 0.7, center.z + dist)
     camera.lookAt(center)
     controls.target.copy(center)
     controls.update()
 
-    // ── Render loop ────────────────────────────────────────────────────────
+    // ── Render loop ───────────────────────────────────────────────────────
     let animId: number
-    const tick = () => {
-      animId = requestAnimationFrame(tick)
-      controls.update()
-      renderer.render(scene, camera)
-    }
+    const tick = () => { animId = requestAnimationFrame(tick); controls.update(); renderer.render(scene, camera) }
     tick()
 
     const ro = new ResizeObserver(() => {
@@ -391,89 +426,70 @@ export default function CncSimulation({
     ro.observe(el)
 
     return () => {
-      cancelAnimationFrame(animId)
-      cancelAnimationFrame(rafRef.current)
-      ro.disconnect()
-      controls.dispose()
-      renderer.dispose()
+      cancelAnimationFrame(animId); cancelAnimationFrame(rafRef.current)
+      ro.disconnect(); controls.dispose(); renderer.dispose()
       if (el.contains(renderer.domElement)) el.removeChild(renderer.domElement)
-      sceneRef.current = null
-      rendererRef.current = null
-      toolGroupRef.current = null
-      traceGeoRef.current = null
-      cursorGeoRef.current = null
+      sceneRef.current = null; rendererRef.current = null
+      toolGroupRef.current = null; rapidLinesRef.current = null
+      cutLinesRef.current = null; cursorGeoRef.current = null
+      printedMeshRef.current = null; supportMeshRef.current = null
+      unmachGroupRef.current = null
     }
   }, [toolpathGCode, printGCode, buildVolume, toolDiameterMm, unmachinableRegions]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Sync speed ref ─────────────────────────────────────────────────────────
   useEffect(() => { stateRef.current.speed = SPEEDS[speed] }, [speed])
 
-  // ── Animation tick ref (always up-to-date) ─────────────────────────────────
+  // ── Animation tick ──────────────────────────────────────────────────────────
   const tickFnRef = useRef<(ts: number) => void>(() => {})
   tickFnRef.current = (timestamp: number) => {
     const state = stateRef.current
     if (!state.playing) return
 
-    const dt = Math.min((timestamp - state.lastTs) / 1000, 0.05)  // cap at 50ms
+    const dt = Math.min((timestamp - state.lastTs) / 1000, 0.05)
     state.lastTs = timestamp
 
-    const moves = movesRef.current
-    if (state.moveIdx >= moves.length) {
-      state.playing = false
-      setPlaying(false)
-      setEnded(true)
-      setProgress(1)
+    const allMoves = movesRef.current
+    if (state.moveIdx >= allMoves.length) {
+      state.playing = false; setPlaying(false); setEnded(true); setProgress(1)
       return
     }
 
-    const move = moves[state.moveIdx]
+    const move = allMoves[state.moveIdx]
     const moveDur = Math.max(move.durationSec / state.speed, 0.0001)
     state.segProg += dt / moveDur
 
-    while (state.segProg >= 1 && state.moveIdx < moves.length - 1) {
-      state.segProg -= 1
-      state.moveIdx++
+    while (state.segProg >= 1 && state.moveIdx < allMoves.length - 1) {
+      state.segProg -= 1; state.moveIdx++
+    }
+    if (state.moveIdx >= allMoves.length - 1 && state.segProg >= 1) {
+      state.segProg = 1; state.playing = false; setPlaying(false); setEnded(true)
     }
 
-    if (state.moveIdx >= moves.length - 1 && state.segProg >= 1) {
-      state.segProg = 1
-      state.playing = false
-      setPlaying(false)
-      setEnded(true)
-    }
-
-    // Interpolate current position
-    const m = moves[Math.min(state.moveIdx, moves.length - 1)]
+    const m = allMoves[Math.min(state.moveIdx, allMoves.length - 1)]
     const t = Math.min(state.segProg, 1)
     const cx = m.tx0 + (m.tx1 - m.tx0) * t
     const cy = m.ty0 + (m.ty1 - m.ty0) * t
     const cz = m.tz0 + (m.tz1 - m.tz0) * t
 
-    // Move tool
-    const tool = toolGroupRef.current
-    if (tool) tool.position.set(cx, cy, cz)
+    if (toolGroupRef.current) toolGroupRef.current.position.set(cx, cy, cz)
 
-    // Update completed trace draw range
-    const traceGeo = traceGeoRef.current
-    if (traceGeo) traceGeo.setDrawRange(0, state.moveIdx * 2)
+    // Update per-type draw ranges
+    const idx = state.moveIdx
+    const rCum = rapidCumRef.current; const cCum = cutCumRef.current
+    if (rapidLinesRef.current && rCum.length > idx) rapidLinesRef.current.geometry.setDrawRange(0, rCum[idx] * 2)
+    if (cutLinesRef.current   && cCum.length > idx) cutLinesRef.current.geometry.setDrawRange(0, cCum[idx] * 2)
 
-    // Update cursor line (from current move start to current position)
-    const cursorGeo = cursorGeoRef.current
-    if (cursorGeo) {
-      const pos = cursorGeo.attributes.position as THREE.BufferAttribute
-      pos.setXYZ(0, m.tx0, m.ty0, m.tz0)
-      pos.setXYZ(1, cx, cy, cz)
-      pos.needsUpdate = true
+    // Cursor
+    const cGeo = cursorGeoRef.current
+    if (cGeo) {
+      const pos = cGeo.attributes.position as THREE.BufferAttribute
+      pos.setXYZ(0, m.tx0, m.ty0, m.tz0); pos.setXYZ(1, cx, cy, cz); pos.needsUpdate = true
     }
 
-    // Update UI progress (throttled to avoid thrashing)
-    setProgress(state.moveIdx / Math.max(moves.length, 1))
-
-    if (state.playing)
-      rafRef.current = requestAnimationFrame(ts => tickFnRef.current(ts))
+    setProgress(idx / Math.max(allMoves.length, 1))
+    if (state.playing) rafRef.current = requestAnimationFrame(ts => tickFnRef.current(ts))
   }
 
-  // ── Play/pause control ──────────────────────────────────────────────────────
   useEffect(() => {
     stateRef.current.playing = playing
     if (playing) {
@@ -487,40 +503,50 @@ export default function CncSimulation({
   const handleReset = () => {
     cancelAnimationFrame(rafRef.current)
     stateRef.current = { ...stateRef.current, playing: false, moveIdx: 0, segProg: 0 }
-    setPlaying(false)
-    setEnded(false)
-    setProgress(0)
-    if (traceGeoRef.current) traceGeoRef.current.setDrawRange(0, 0)
+    setPlaying(false); setEnded(false); setProgress(0)
+    if (rapidLinesRef.current) rapidLinesRef.current.geometry.setDrawRange(0, 0)
+    if (cutLinesRef.current)   cutLinesRef.current.geometry.setDrawRange(0, 0)
     if (cursorGeoRef.current) {
       const pos = cursorGeoRef.current.attributes.position as THREE.BufferAttribute
-      pos.setXYZ(0, 0, 0, 0); pos.setXYZ(1, 0, 0, 0); pos.needsUpdate = true
+      pos.setXYZ(0, 0,0,0); pos.setXYZ(1, 0,0,0); pos.needsUpdate = true
     }
-    if (toolGroupRef.current && moves.length > 0) {
-      const m0 = moves[0]
-      toolGroupRef.current.position.set(m0.tx0, m0.ty0, m0.tz0)
-    }
+    if (toolGroupRef.current && moves.length > 0)
+      toolGroupRef.current.position.set(moves[0].tx0, moves[0].ty0, moves[0].tz0)
   }
 
+  const toggle = (key: VisKey) => setVis(v => ({ ...v, [key]: !v[key] }))
   const simTimeSec = estimatedMachiningSec / SPEEDS[speed]
+
+  const visibleLegend = LEGEND_ITEMS.filter(
+    item => item.key !== 'unmachinable' || unmachinableRegions.length > 0
+  )
 
   return (
     <div className={`flex flex-col gap-3 ${className ?? ''}`}>
-      {/* Legend / Info bar */}
-      <div className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 flex flex-wrap items-center gap-4 text-xs text-gray-400">
-        <span className="font-medium text-gray-300 mr-1">Legend:</span>
-        <span><span className="inline-block w-3 h-3 rounded-sm bg-yellow-400 mr-1"></span>Rapid (G0)</span>
-        <span><span className="inline-block w-3 h-3 rounded-sm bg-cyan-400 mr-1"></span>Cut (G1)</span>
-        <span><span className="inline-block w-3 h-3 rounded-sm bg-blue-600 mr-1"></span>Printed</span>
-        <span><span className="inline-block w-3 h-3 rounded-sm bg-orange-500 mr-1"></span>Support</span>
-        {unmachinableRegions.length > 0 && (
-          <span className="text-red-400">
-            <span className="inline-block w-3 h-3 rounded-sm bg-red-600 mr-1 opacity-70"></span>
-            Unmachinable ({unmachinableRegions.length})
-          </span>
-        )}
-        <span><span className="text-yellow-300">■</span> Tool tip</span>
-        <span className="ml-auto text-gray-500">
-          {moves.length} moves · machining time: {fmtTime(estimatedMachiningSec)} · setup est: ~{setupEstimateSec}s
+
+      {/* Clickable legend */}
+      <div className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 flex flex-wrap items-center gap-2">
+        <span className="text-xs text-gray-400 font-medium mr-1">Show:</span>
+        {visibleLegend.map(({ key, label, color }) => (
+          <button
+            key={key}
+            onClick={() => toggle(key)}
+            title={vis[key] ? `Hide ${label}` : `Show ${label}`}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs transition-all select-none ${
+              vis[key]
+                ? 'border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700'
+                : 'border-gray-700 bg-gray-900 text-gray-500 hover:bg-gray-800'
+            }`}
+          >
+            <span className={`inline-block w-2.5 h-2.5 rounded-sm flex-shrink-0 ${color} ${vis[key] ? '' : 'opacity-30'}`} />
+            <span className={vis[key] ? '' : 'line-through'}>{label}</span>
+            {key === 'unmachinable' && (
+              <span className="ml-0.5 text-red-400">({unmachinableRegions.length})</span>
+            )}
+          </button>
+        ))}
+        <span className="ml-auto text-xs text-gray-500">
+          {moves.length} moves · machining: {fmtTime(estimatedMachiningSec)} · setup ~{setupEstimateSec}s
         </span>
       </div>
 
@@ -531,17 +557,12 @@ export default function CncSimulation({
         style={{ minHeight: '55vh' }}
       />
 
-      {/* Controls */}
+      {/* Playback controls */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col gap-3">
-        {/* Progress bar */}
         <div className="relative h-2 bg-gray-800 rounded-full overflow-hidden">
-          <div
-            className="absolute left-0 top-0 h-full bg-green-500 transition-none rounded-full"
-            style={{ width: `${progress * 100}%` }}
-          />
+          <div className="absolute left-0 top-0 h-full bg-green-500 transition-none rounded-full" style={{ width: `${progress * 100}%` }} />
         </div>
 
-        {/* Buttons + speed */}
         <div className="flex items-center gap-3 flex-wrap">
           <button
             onClick={() => { if (ended) handleReset(); setPlaying(p => !p) }}
@@ -565,11 +586,7 @@ export default function CncSimulation({
                 <button
                   key={s}
                   onClick={() => setSpeed(i)}
-                  className={`px-2.5 py-1 rounded text-xs transition ${
-                    speed === i
-                      ? 'bg-primary text-white'
-                      : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                  }`}
+                  className={`px-2.5 py-1 rounded text-xs transition ${speed === i ? 'bg-primary text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
                 >
                   {s}x
                 </button>
@@ -577,14 +594,10 @@ export default function CncSimulation({
             </div>
           </div>
 
-          <span className="text-xs text-gray-500 ml-2">
-            sim time: {fmtTime(simTimeSec)}
-          </span>
+          <span className="text-xs text-gray-500 ml-2">sim: {fmtTime(simTimeSec)}</span>
         </div>
 
-        {ended && (
-          <p className="text-xs text-green-400 text-center">Simulation complete — toolpath fully traced.</p>
-        )}
+        {ended && <p className="text-xs text-green-400 text-center">Simulation complete — toolpath fully traced.</p>}
       </div>
     </div>
   )

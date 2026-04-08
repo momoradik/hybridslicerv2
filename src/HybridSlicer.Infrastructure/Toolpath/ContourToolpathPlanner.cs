@@ -127,8 +127,11 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
                 continue;
             }
 
-            // Detect ToolTooWide: compensated result is empty or has negligible area
-            if (compensated is null || compensated.IsEmpty || compensated.Area < MinAreaMm2)
+            // Detect ToolTooWide:
+            // • Outer walls: CRC expands outward so compensated is always ≥ original — only flag if truly empty.
+            // • Inner walls: CRC shrinks inward — also flag if area is negligible (pocket too small for tool).
+            if (compensated is null || compensated.IsEmpty ||
+                (!request.IsOuterWall && compensated.Area < MinAreaMm2))
             {
                 _logger.LogDebug(
                     "Segment at Z={Z} too narrow for tool Ø{D} mm — ToolTooWide",
