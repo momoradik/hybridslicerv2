@@ -216,6 +216,19 @@ export default function CncSimulation({
   const printSegs = useMemo(() => parsePrintSegments(printGCode), [printGCode])
   const setupEstimateSec = useMemo(() => Math.max(1, Math.ceil((moves.length + printSegs.length) / 8000)), [moves.length, printSegs.length])
 
+  // Max Z height across all moves and print segments (for slice slider range)
+  const maxSceneZ = useMemo(() => {
+    let max = 0
+    for (const m of moves)    { max = Math.max(max, m.ty0, m.ty1) }
+    for (const s of printSegs){ max = Math.max(max, s.y0,  s.y1)  }
+    return max || 1
+  }, [moves, printSegs])
+
+  const [sliceZ, setSliceZ] = useState(maxSceneZ)
+
+  // Reset sliceZ when a new toolpath is loaded
+  useEffect(() => { setSliceZ(maxSceneZ) }, [maxSceneZ])
+
   // ── Visibility toggle effects ───────────────────────────────────────────────
   useEffect(() => { if (rapidLinesRef.current)  rapidLinesRef.current.visible  = vis.rapid        }, [vis.rapid])
   useEffect(() => { if (cutLinesRef.current)    cutLinesRef.current.visible    = vis.cut          }, [vis.cut])
@@ -514,6 +527,34 @@ export default function CncSimulation({
       toolGroupRef.current.position.set(moves[0].tx0, moves[0].ty0, moves[0].tz0)
   }
 
+  // Seek to a specific move index (pauses animation and updates all visual state)
+  const seekTo = (idx: number) => {
+    cancelAnimationFrame(rafRef.current)
+    const clamped = Math.max(0, Math.min(idx, moves.length === 0 ? 0 : moves.length - 1))
+    stateRef.current = { ...stateRef.current, playing: false, moveIdx: clamped, segProg: 0 }
+    setPlaying(false); setEnded(false)
+
+    const rCum = rapidCumRef.current; const cCum = cutCumRef.current
+    if (rapidLinesRef.current && rCum.length > clamped) rapidLinesRef.current.geometry.setDrawRange(0, rCum[clamped] * 2)
+    if (cutLinesRef.current   && cCum.length > clamped) cutLinesRef.current.geometry.setDrawRange(0, cCum[clamped] * 2)
+
+    if (toolGroupRef.current && moves.length > 0) {
+      const m = moves[clamped]
+      toolGroupRef.current.position.set(m.tx0, m.ty0, m.tz0)
+    }
+    setProgress(moves.length === 0 ? 0 : clamped / moves.length)
+  }
+
+  // When sliceZ changes, seek to the last move whose destination Z ≤ sliceZ
+  useEffect(() => {
+    if (moves.length === 0) return
+    let lastIdx = 0
+    for (let i = 0; i < moves.length; i++) {
+      if (moves[i].ty1 <= sliceZ + 0.01) lastIdx = i
+    }
+    seekTo(lastIdx)
+  }, [sliceZ]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const toggle = (key: VisKey) => setVis(v => ({ ...v, [key]: !v[key] }))
   const simTimeSec = estimatedMachiningSec / SPEEDS[speed]
 
@@ -550,12 +591,34 @@ export default function CncSimulation({
         </span>
       </div>
 
-      {/* 3D viewport */}
-      <div
-        ref={mountRef}
-        className="bg-gray-950 rounded-xl border border-gray-700 overflow-hidden flex-1"
-        style={{ minHeight: '55vh' }}
-      />
+      {/* 3D viewport + Z-slice slider overlay */}
+      <div className="relative bg-gray-950 rounded-xl border border-gray-700 overflow-hidden flex-1" style={{ minHeight: '55vh' }}>
+        <div ref={mountRef} style={{ position: 'absolute', inset: 0 }} />
+
+        {/* Z-layer scrub bar (matches GCodePreview3D pattern) */}
+        {maxSceneZ > 0 && (
+          <div style={{
+            position: 'absolute', bottom: 12, left: 12, right: 12,
+            display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            <span className="text-white text-xs rounded px-1.5 py-0.5" style={{ background: 'rgba(0,0,0,0.6)', whiteSpace: 'nowrap' }}>
+              Z {sliceZ.toFixed(1)} mm
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={maxSceneZ}
+              step={0.1}
+              value={sliceZ}
+              onChange={e => setSliceZ(parseFloat(e.target.value))}
+              className="flex-1 accent-cyan-400"
+            />
+            <span className="text-white text-xs rounded px-1.5 py-0.5" style={{ background: 'rgba(0,0,0,0.6)', whiteSpace: 'nowrap' }}>
+              {maxSceneZ.toFixed(1)} mm
+            </span>
+          </div>
+        )}
+      </div>
 
       {/* Playback controls */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col gap-3">
