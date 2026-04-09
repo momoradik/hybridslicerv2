@@ -32,7 +32,19 @@ public sealed record GenerateToolpathsCommand(
     /// Optional spindle speed override (RPM). When null, the tool's RecommendedRpm is used.
     /// Allows the user to fine-tune spindle speed per job without changing the tool definition.
     /// </summary>
-    int? SpindleRpmOverride = null) : IRequest<GenerateToolpathsResult>;
+    int? SpindleRpmOverride = null,
+    /// <summary>Spindle start position X (mm). Tool moves here before first machining pass.</summary>
+    double SpindleStartX = 0.0,
+    /// <summary>Spindle start position Y (mm).</summary>
+    double SpindleStartY = 0.0,
+    /// <summary>Spindle start position Z (mm). Null = machine safe clearance height.</summary>
+    double? SpindleStartZ = null,
+    /// <summary>Spindle end position X (mm). Tool returns here after last pass.</summary>
+    double SpindleEndX = 0.0,
+    /// <summary>Spindle end position Y (mm).</summary>
+    double SpindleEndY = 0.0,
+    /// <summary>Spindle end position Z (mm). Null = same as start Z.</summary>
+    double? SpindleEndZ = null) : IRequest<GenerateToolpathsResult>;
 
 public sealed record GenerateToolpathsResult(
     Guid                 JobId,

@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.RegularExpressions;
 using HybridSlicer.Application.Common;
 using HybridSlicer.Application.Interfaces;
 using HybridSlicer.Application.Interfaces.Repositories;
@@ -12,33 +14,21 @@ namespace HybridSlicer.Application.UseCases.PlanHybridProcess;
 public sealed class PlanHybridProcessHandler : IRequestHandler<PlanHybridProcessCommand, PlanHybridProcessResult>
 {
     private readonly IPrintJobRepository _jobs;
-    private readonly IPrintProfileRepository _printProfiles;
-    private readonly IMachineProfileRepository _machines;
-    private readonly ICncToolRepository _tools;
     private readonly IHybridOrchestrator _orchestrator;
     private readonly ICustomGCodeBlockRepository _blocks;
-    private readonly IToolpathPlanner _planner;
     private readonly StorageOptions _storage;
     private readonly ILogger<PlanHybridProcessHandler> _logger;
 
     public PlanHybridProcessHandler(
         IPrintJobRepository jobs,
-        IPrintProfileRepository printProfiles,
-        IMachineProfileRepository machines,
-        ICncToolRepository tools,
         IHybridOrchestrator orchestrator,
         ICustomGCodeBlockRepository blocks,
-        IToolpathPlanner planner,
         IOptions<StorageOptions> storageOpts,
         ILogger<PlanHybridProcessHandler> logger)
     {
         _jobs = jobs;
-        _printProfiles = printProfiles;
-        _machines = machines;
-        _tools = tools;
         _orchestrator = orchestrator;
         _blocks = blocks;
-        _planner = planner;
         _storage = storageOpts.Value;
         _logger = logger;
     }
@@ -58,56 +48,48 @@ public sealed class PlanHybridProcessHandler : IRequestHandler<PlanHybridProcess
         if (job.CncToolId is null)
             throw new DomainException("MISSING_TOOL", "No CNC tool assigned to job. Run generate-toolpaths first.");
 
-        var machine = await _machines.GetByIdAsync(job.MachineProfileId, ct)
-            ?? throw new DomainException("MACHINE_NOT_FOUND", $"Machine profile {job.MachineProfileId} not found.");
-
-        var tool = await _tools.GetByIdAsync(job.CncToolId.Value, ct)
-            ?? throw new DomainException("TOOL_NOT_FOUND", $"CNC tool {job.CncToolId} not found.");
-
-        var profile = await _printProfiles.GetByIdAsync(job.PrintProfileId, ct)
-            ?? throw new DomainException("PROFILE_NOT_FOUND", $"Print profile {job.PrintProfileId} not found.");
+        if (job.ToolpathGCodePath is null || !File.Exists(job.ToolpathGCodePath))
+            throw new DomainException("NO_TOOLPATH",
+                "Toolpath G-code not found. Run generate-toolpaths first.");
 
         var enabledBlocks = await _blocks.GetEnabledAsync(ct);
 
         job.MarkPlanningHybrid();
         await _jobs.UpdateAsync(job, ct);
 
-        _logger.LogInformation("Building hybrid plan for job {JobId}, machine every {N} layers",
-            cmd.JobId, cmd.MachineEveryNLayers);
+        _logger.LogInformation("Building hybrid plan for job {JobId}", cmd.JobId);
 
         try
         {
-            // Re-generate per-layer CNC G-code for orchestration
-            var cncByLayer = new Dictionary<int, string>();
-            for (var layer = cmd.MachineEveryNLayers; layer <= job.TotalPrintLayers; layer += cmd.MachineEveryNLayers)
-            {
-                var zHeight = layer * profile.LayerHeightMm;
-                var toolpathResult = await _planner.PlanContourAsync(new ToolpathRequest(
-                    StlFilePath:              job.StlFilePath,
-                    ZHeightMm:                zHeight,
-                    ToolDiameterMm:           tool.DiameterMm,
-                    MaxDepthOfCutMm:          tool.MaxDepthOfCutMm,
-                    FeedRateMmPerMin:         tool.RecommendedFeedMmPerMin,
-                    SpindleRpm:               tool.RecommendedRpm,
-                    MachineOffset:            machine.CncOffset,
-                    SafeClearanceHeightMm:    machine.SafeClearanceHeightMm), ct);
+            // Parse the already-generated toolpath.gcode to extract per-layer blocks.
+            // This ensures the hybrid G-code uses the exact same machining passes
+            // (including auto-machining frequency, support avoidance, spindle positions, etc.)
+            // that were validated during generate-toolpaths — not a simplified re-generation.
+            var toolpathText = await File.ReadAllTextAsync(job.ToolpathGCodePath, ct);
+            var (cncByLayer, preamble, postamble) = ParseToolpathGCode(toolpathText);
 
-                if (!toolpathResult.IsEmpty)
-                    cncByLayer[layer] = toolpathResult.GCode;
-            }
+            if (cncByLayer.Count == 0)
+                throw new DomainException("EMPTY_TOOLPATH",
+                    "Toolpath G-code contains no layer blocks. Re-run generate-toolpaths.");
+
+            _logger.LogInformation(
+                "Parsed toolpath G-code: {Count} machined layers from {Path}",
+                cncByLayer.Count, job.ToolpathGCodePath);
 
             var outputPath = Path.Combine(
                 _storage.Root, "jobs", job.Id.ToString(), "hybrid.gcode");
 
             var planResult = await _orchestrator.BuildPlanAsync(new HybridPlanRequest(
-                JobId:                 job.Id,
-                PrintGCodePath:        job.PrintGCodePath,
-                CncGCodeByLayer:       cncByLayer,
-                MachineEveryNLayers:   cmd.MachineEveryNLayers,
-                TotalPrintLayers:      job.TotalPrintLayers.Value,
-                CncToolId:             job.CncToolId.Value,
-                EnabledCustomBlocks:   enabledBlocks,
-                OutputGCodePath:       outputPath), ct);
+                JobId:               job.Id,
+                PrintGCodePath:      job.PrintGCodePath,
+                CncGCodeByLayer:     cncByLayer,
+                CncPreamble:         preamble,
+                CncPostamble:        postamble,
+                MachineEveryNLayers: cmd.MachineEveryNLayers,
+                TotalPrintLayers:    job.TotalPrintLayers.Value,
+                CncToolId:           job.CncToolId.Value,
+                EnabledCustomBlocks: enabledBlocks,
+                OutputGCodePath:     outputPath), ct);
 
             job.MarkReady(planResult.HybridGCodePath);
             await _jobs.UpdateAsync(job, ct);
@@ -128,5 +110,77 @@ public sealed class PlanHybridProcessHandler : IRequestHandler<PlanHybridProcess
             await _jobs.UpdateAsync(job, ct);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Splits toolpath.gcode into preamble, per-layer blocks, and postamble.
+    /// Layer blocks are keyed by the 1-based layer number parsed from
+    /// <c>; ── Layer N (nominal Z=…)</c> comment markers written by GenerateToolpathsHandler.
+    /// </summary>
+    private static (Dictionary<int, string> byLayer, string preamble, string postamble)
+        ParseToolpathGCode(string gcode)
+    {
+        var byLayer   = new Dictionary<int, string>();
+        var preamble  = new StringBuilder();
+        var postamble = new StringBuilder();
+        var current   = new StringBuilder();
+        int? currentLayer = null;
+        bool inPostamble  = false;
+
+        foreach (var rawLine in gcode.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r');
+
+            // Detect postamble (must come before layer-marker check)
+            if (!inPostamble && line.Contains("=== Postamble"))
+            {
+                // Store the last layer block that was being accumulated
+                if (currentLayer.HasValue)
+                    byLayer[currentLayer.Value] = current.ToString();
+                else
+                    preamble.Append(current.ToString());
+
+                current.Clear();
+                inPostamble = true;
+                postamble.AppendLine(line);
+                continue;
+            }
+
+            if (inPostamble)
+            {
+                postamble.AppendLine(line);
+                continue;
+            }
+
+            // Detect layer marker: "; ── Layer 5 (nominal Z=…)"
+            // The handler emits: $"; ── Layer {layer} (nominal Z={zHeight:F3} mm …)"
+            var m = Regex.Match(line, @"^;.*Layer\s+(\d+)", RegexOptions.IgnoreCase);
+            if (m.Success)
+            {
+                // Store the previous block
+                if (currentLayer.HasValue)
+                    byLayer[currentLayer.Value] = current.ToString();
+                else
+                    preamble.Append(current.ToString());
+
+                currentLayer = int.Parse(m.Groups[1].Value);
+                current.Clear();
+                current.AppendLine(line);
+                continue;
+            }
+
+            current.AppendLine(line);
+        }
+
+        // EOF: flush whatever remains
+        if (!inPostamble)
+        {
+            if (currentLayer.HasValue)
+                byLayer[currentLayer.Value] = current.ToString();
+            else
+                preamble.Append(current.ToString());
+        }
+
+        return (byLayer, preamble.ToString(), postamble.ToString());
     }
 }

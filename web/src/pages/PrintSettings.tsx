@@ -55,6 +55,8 @@ const EMPTY: DraftProfile = {
   coolingEnabled: true,
   coolingFanSpeedPct: 100,
   supportEnabled: false,
+  pelletModeEnabled: false,
+  virtualFilamentDiameterMm: 1.0,
 }
 
 export default function PrintSettings() {
@@ -138,6 +140,7 @@ export default function PrintSettings() {
               <Chip color="orange">{p.printSpeedMmS} mm/s</Chip>
               <Chip color="green">Flow {p.materialFlowPct}%</Chip>
               <Chip color="gray">{p.printTemperatureDegC}°C</Chip>
+              {p.pelletModeEnabled && <Chip color="amber">Pellet Mode</Chip>}
             </div>
           </div>
         ))}
@@ -210,6 +213,62 @@ export default function PrintSettings() {
                     </WithAuto>
                     <AutoHint>100 % (Cura default)</AutoHint>
                   </F>
+                </div>
+              </Section>
+
+              {/* ── PELLET MODE ── */}
+              <Section
+                title="Pellet Extrusion Mode"
+                subtitle="For direct-pellet extruders. Uses a virtual filament diameter so Cura's E-math matches actual pellet volume output."
+              >
+                <div className="space-y-3">
+                  <label className="flex items-center gap-3 cursor-pointer select-none">
+                    <div
+                      onClick={() => set('pelletModeEnabled', !draft.pelletModeEnabled)}
+                      className={`relative w-11 h-6 rounded-full transition-colors ${
+                        draft.pelletModeEnabled ? 'bg-amber-600' : 'bg-gray-700'
+                      }`}
+                    >
+                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                        draft.pelletModeEnabled ? 'translate-x-5' : 'translate-x-0'
+                      }`} />
+                    </div>
+                    <span className={`text-sm font-medium ${draft.pelletModeEnabled ? 'text-amber-300' : 'text-gray-400'}`}>
+                      {draft.pelletModeEnabled ? 'Pellet Mode ON' : 'Pellet Mode OFF (normal filament)'}
+                    </span>
+                  </label>
+
+                  {draft.pelletModeEnabled && (
+                    <div className="pl-2 space-y-3 border-l-2 border-amber-800/60">
+                      <div className="grid grid-cols-2 gap-4">
+                        <F
+                          label="Virtual Filament Diameter (mm)"
+                          hint="material_diameter override"
+                        >
+                          <NumIn
+                            value={draft.virtualFilamentDiameterMm ?? 1.0}
+                            min={0.1} max={5} step={0.05}
+                            onChange={v => set('virtualFilamentDiameterMm', v)}
+                          />
+                          <AutoHint>
+                            1.0 mm is typical. Tune up/down to match actual extrusion volume.
+                          </AutoHint>
+                        </F>
+                      </div>
+                      <div className="bg-amber-950/30 border border-amber-800/40 rounded-lg p-3 text-xs text-amber-300/80 space-y-1">
+                        <p className="font-medium text-amber-300">How it works</p>
+                        <p>
+                          Cura computes <span className="font-mono">E = (b × h × L) / (π/4 × d²) × flow</span>.
+                          For a pellet extruder, set <span className="font-mono">d = virtual diameter</span> so that
+                          this formula maps to your extruder's actual volumetric output.
+                        </p>
+                        <p>
+                          Start with 1.0 mm and run the <span className="font-medium text-amber-200">Pellet Calibration</span> tests
+                          to find the correct value for your setup.
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </Section>
 
@@ -352,6 +411,7 @@ function Chip({ children, color }: { children: React.ReactNode; color: string })
     orange: 'bg-orange-900/40 text-orange-300',
     green:  'bg-green-900/40 text-green-300',
     gray:   'bg-gray-800 text-gray-400',
+    amber:  'bg-amber-900/40 text-amber-300',
   }
   return <span className={`px-1.5 py-0.5 rounded ${cls[color] ?? cls.gray}`}>{children}</span>
 }

@@ -59,6 +59,8 @@ export interface PrintProfile {
   coolingFanSpeedPct: number
   // Support
   supportEnabled: boolean
+  pelletModeEnabled: boolean
+  virtualFilamentDiameterMm: number
   version: string
 }
 
@@ -88,7 +90,9 @@ export interface PrintJob {
   materialId: string
   cncToolId?: string
   totalPrintLayers?: number
-  hybridGCodePath?: string
+  printGCodePath?: string      // set after slicing
+  toolpathGCodePath?: string   // set after generate-toolpaths
+  hybridGCodePath?: string     // set after plan-hybrid
   errorMessage?: string
   createdAt: string
   updatedAt: string

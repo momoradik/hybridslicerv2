@@ -9,8 +9,10 @@ const allNavItems = [
   { to: '/machine-config',    label: 'Machine Config', icon: '⚙️', devOnly: false },
   { to: '/tools',             label: 'Tool Library',   icon: '🔧', devOnly: false },
   { to: '/hybrid-planner',    label: 'Hybrid Planner', icon: '🔀', devOnly: false },
+  { to: '/hybrid-preview',    label: 'Hybrid Preview', icon: '🎬', devOnly: false },
   { to: '/custom-gcode',      label: 'Custom G-code',  icon: '📝', devOnly: false },
   { to: '/calibration',       label: 'Calibration',    icon: '📐', devOnly: false },
+  { to: '/pellet-calibration', label: 'Pellet Calib.', icon: '🟡', devOnly: false },
   { to: '/settings/branding', label: 'Branding',       icon: '🎨', devOnly: true  },
 ]
 

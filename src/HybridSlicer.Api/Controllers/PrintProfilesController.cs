@@ -35,7 +35,8 @@ public sealed class PrintProfilesController : ControllerBase
             .WithSupport(req.SupportEnabled, req.SupportType, req.SupportOverhangAngleDeg)
             .WithFlow(req.MaterialFlowPct)
             .WithNozzleDiameter(req.NozzleDiameterMm)
-            .WithInnerWallSpeed(req.InnerWallSpeedMmS);
+            .WithInnerWallSpeed(req.InnerWallSpeedMmS)
+            .WithPelletMode(req.PelletModeEnabled, req.VirtualFilamentDiameterMm);
 
         await _repo.AddAsync(profile, ct);
         return CreatedAtAction(nameof(GetById), new { id = profile.Id }, profile);
@@ -57,7 +58,8 @@ public sealed class PrintProfilesController : ControllerBase
             .WithSupport(req.SupportEnabled, req.SupportType, req.SupportOverhangAngleDeg)
             .WithFlow(req.MaterialFlowPct)
             .WithNozzleDiameter(req.NozzleDiameterMm)
-            .WithInnerWallSpeed(req.InnerWallSpeedMmS);
+            .WithInnerWallSpeed(req.InnerWallSpeedMmS)
+            .WithPelletMode(req.PelletModeEnabled, req.VirtualFilamentDiameterMm);
 
         await _repo.UpdateAsync(profile, ct);
         return Ok(profile);
@@ -98,5 +100,7 @@ public record CreatePrintProfileRequest(
     int    CoolingFanSpeedPct     = 100,
     double FilamentDiameterMm     = 1.75,
     double MaterialFlowPct        = 100.0,
-    double NozzleDiameterMm       = 0.0,
-    double InnerWallSpeedMmS      = 60.0);
+    double NozzleDiameterMm             = 0.0,
+    double InnerWallSpeedMmS            = 60.0,
+    bool   PelletModeEnabled            = false,
+    double VirtualFilamentDiameterMm    = 1.0);

@@ -61,6 +61,10 @@ public class PrintProfile
     public bool BrimEnabled { get; private set; }
     public int BrimLineCount { get; private set; } = 8;
 
+    // Pellet extrusion mode
+    public bool PelletModeEnabled { get; private set; }
+    public double VirtualFilamentDiameterMm { get; private set; } = 1.0;
+
     // Versioning
     public string Version { get; private set; } = "1.0";
     public DateTime CreatedAt { get; private set; }
@@ -146,6 +150,16 @@ public class PrintProfile
         if (mmS < 0 || mmS > 1000)
             throw new DomainException("INVALID_SPEED", "Speed must be 0–1000 mm/s.");
         InnerWallSpeedMmS = mmS;
+        return Touch();
+    }
+
+    public PrintProfile WithPelletMode(bool enabled, double virtualDiameterMm = 1.0)
+    {
+        if (enabled && (virtualDiameterMm <= 0 || virtualDiameterMm > 5))
+            throw new DomainException("INVALID_VIRTUAL_DIAMETER",
+                "Virtual filament diameter must be between 0.1 and 5 mm.");
+        PelletModeEnabled = enabled;
+        VirtualFilamentDiameterMm = virtualDiameterMm;
         return Touch();
     }
 

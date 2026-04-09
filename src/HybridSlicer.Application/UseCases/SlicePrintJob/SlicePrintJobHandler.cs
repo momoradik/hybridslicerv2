@@ -73,7 +73,9 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
                 SupportPlacement:      job.SupportPlacement,
                 CoolingEnabled:        profile.CoolingEnabled,
                 CoolingFanSpeedPct:    profile.CoolingFanSpeedPct,
-                FilamentDiameterMm:    profile.FilamentDiameterMm,
+                FilamentDiameterMm:    profile.PelletModeEnabled
+                                           ? profile.VirtualFilamentDiameterMm
+                                           : profile.FilamentDiameterMm,
                 BedWidthMm:            machine.BedWidthMm,
                 BedDepthMm:            machine.BedDepthMm,
                 BedHeightMm:           machine.BedHeightMm,

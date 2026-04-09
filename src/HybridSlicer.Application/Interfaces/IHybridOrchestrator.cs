@@ -17,8 +17,12 @@ public interface IHybridOrchestrator
 public sealed record HybridPlanRequest(
     Guid JobId,
     string PrintGCodePath,
-    /// <summary>CNC G-code keyed by layer index at which machining occurs.</summary>
+    /// <summary>CNC G-code keyed by layer index at which machining occurs (parsed from toolpath.gcode).</summary>
     IReadOnlyDictionary<int, string> CncGCodeByLayer,
+    /// <summary>G-code emitted once before the first machining block (spindle positioning).</summary>
+    string CncPreamble,
+    /// <summary>G-code emitted once after the last machining block (spindle park + M5).</summary>
+    string CncPostamble,
     int MachineEveryNLayers,
     int TotalPrintLayers,
     Guid CncToolId,

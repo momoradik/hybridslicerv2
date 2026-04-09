@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using HybridSlicer.Application.Interfaces;
 using HybridSlicer.Application.Interfaces.Repositories;
@@ -108,6 +109,22 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
         gcodeBuilder.AppendLine($"; CRC      : offset = tool_radius({tool.DiameterMm / 2:F3}) + nozzle_radius({profile.LineWidthMm / 2:F3}) = {(tool.DiameterMm + profile.LineWidthMm) / 2:F3} mm outward");
         gcodeBuilder.AppendLine($"; Source   : Cura WALL-OUTER paths (parsed from print.gcode)");
         gcodeBuilder.AppendLine($"; Generated: {DateTime.UtcNow:u}");
+        gcodeBuilder.AppendLine();
+
+        // ── Resolve spindle start / end positions ─────────────────────────────
+        var resolvedStartZ = cmd.SpindleStartZ ?? machine.SafeClearanceHeightMm;
+        var resolvedEndX   = cmd.SpindleEndX;
+        var resolvedEndY   = cmd.SpindleEndY;
+        var resolvedEndZ   = cmd.SpindleEndZ ?? resolvedStartZ;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+
+        gcodeBuilder.AppendLine($"; Spindle start: X={cmd.SpindleStartX.ToString("F3", inv)} Y={cmd.SpindleStartY.ToString("F3", inv)} Z={resolvedStartZ.ToString("F3", inv)}");
+        gcodeBuilder.AppendLine($"; Spindle end  : X={resolvedEndX.ToString("F3", inv)} Y={resolvedEndY.ToString("F3", inv)} Z={resolvedEndZ.ToString("F3", inv)}");
+        gcodeBuilder.AppendLine();
+        gcodeBuilder.AppendLine("; === Preamble: move spindle to start position ===");
+        gcodeBuilder.AppendLine($"G0 Z{machine.SafeClearanceHeightMm.ToString("F3", inv)}");
+        gcodeBuilder.AppendLine($"G0 X{cmd.SpindleStartX.ToString("F3", inv)} Y{cmd.SpindleStartY.ToString("F3", inv)}");
+        gcodeBuilder.AppendLine($"G0 Z{resolvedStartZ.ToString("F3", inv)}");
         gcodeBuilder.AppendLine();
 
         // ── Compute which layers to machine ───────────────────────────────────
@@ -424,6 +441,14 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                     layer, zHeight, validation.Status,
                     layerData.OuterWallPaths.Count, layerData.InnerWallPaths.Count);
             }
+
+            // Postamble: return spindle to end position
+            gcodeBuilder.AppendLine();
+            gcodeBuilder.AppendLine("; === Postamble: return spindle to end position ===");
+            gcodeBuilder.AppendLine($"G0 Z{machine.SafeClearanceHeightMm.ToString("F3", inv)}");
+            gcodeBuilder.AppendLine($"G0 X{resolvedEndX.ToString("F3", inv)} Y{resolvedEndY.ToString("F3", inv)}");
+            gcodeBuilder.AppendLine($"G0 Z{resolvedEndZ.ToString("F3", inv)}");
+            gcodeBuilder.AppendLine("M5 ; spindle stop — job complete");
 
             // Write toolpath file
             var jobDir          = Path.GetDirectoryName(job.StlFilePath)!;

@@ -57,13 +57,13 @@ public sealed partial class HybridOrchestrator : IHybridOrchestrator
 
         int printStart = 0; // last layer that has been flushed into output
 
-        for (var layer = 1; layer <= request.TotalPrintLayers; layer++)
-        {
-            var hasCncAtThisLayer =
-                layer % request.MachineEveryNLayers == 0
-                && request.CncGCodeByLayer.ContainsKey(layer);
+        // Use the actual machined layers from the parsed toolpath (sorted ascending).
+        // This correctly handles both manual-interval and auto-machining-frequency scheduling.
+        var sortedLayers = request.CncGCodeByLayer.Keys.OrderBy(x => x).ToList();
 
-            if (!hasCncAtThisLayer) continue;
+        for (var i = 0; i < sortedLayers.Count; i++)
+        {
+            var layer = sortedLayers[i];
 
             // Flush ALL print layers from (printStart+1) through (layer) inclusive.
             // Layer N is printed BEFORE the CNC operation that machines its top surface.
@@ -84,10 +84,18 @@ public sealed partial class HybridOrchestrator : IHybridOrchestrator
             AppendCustomBlocks(output, request.EnabledCustomBlocks,
                 GCodeTrigger.BeforeMachining, plan, ref stepIndex);
 
-            // CNC toolpath
+            // Emit CNC preamble (spindle positioning) before the very first machining block
+            if (i == 0 && !string.IsNullOrWhiteSpace(request.CncPreamble))
+            {
+                output.AppendLine("; --- CNC Preamble (spindle start position) ---");
+                output.AppendLine(request.CncPreamble.TrimEnd());
+                output.AppendLine();
+            }
+
+            // CNC toolpath for this layer
             var cncGCode = request.CncGCodeByLayer[layer];
             output.AppendLine($"; --- CNC Machining @ Layer {layer} ---");
-            output.AppendLine(cncGCode);
+            output.AppendLine(cncGCode.TrimEnd());
             output.AppendLine($"; --- End CNC @ Layer {layer} ---");
             output.AppendLine();
 
@@ -95,6 +103,14 @@ public sealed partial class HybridOrchestrator : IHybridOrchestrator
                 plan.Id, stepIndex++, layer, cncGCode, request.CncToolId);
             cncStep.SetSafetyResult(SafetyStatus.Clear); // validated in GenerateToolpaths
             plan.AddStep(cncStep);
+
+            // Emit CNC postamble (spindle park + M5) after the very last machining block
+            if (i == sortedLayers.Count - 1 && !string.IsNullOrWhiteSpace(request.CncPostamble))
+            {
+                output.AppendLine("; --- CNC Postamble (spindle end / park) ---");
+                output.AppendLine(request.CncPostamble.TrimEnd());
+                output.AppendLine();
+            }
 
             // AfterMachining blocks
             AppendCustomBlocks(output, request.EnabledCustomBlocks,

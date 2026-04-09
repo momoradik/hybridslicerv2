@@ -26,6 +26,13 @@ export default function HybridPlanner() {
   const [autoMachiningFrequency, setAutoMachiningFrequency] = useState(false)
   const [zSafetyOffsetMm,       setZSafetyOffsetMm]       = useState(0.0)
   const [spindleRpmOverride,    setSpindleRpmOverride]    = useState<number | null>(null)
+  const [spindleStartX,    setSpindleStartX]    = useState(0.0)
+  const [spindleStartY,    setSpindleStartY]    = useState(0.0)
+  const [spindleStartZ,    setSpindleStartZ]    = useState<number | null>(null)
+  const [spindleEndSame,   setSpindleEndSame]   = useState(true)
+  const [spindleEndX,      setSpindleEndX]      = useState(0.0)
+  const [spindleEndY,      setSpindleEndY]      = useState(0.0)
+  const [spindleEndZ,      setSpindleEndZ]      = useState<number | null>(null)
   const [activeTab,             setActiveTab]             = useState<Tab>('config')
   const [toolpathGCode,         setToolpathGCode]         = useState<string | null>(null)
   const [printGCode,            setPrintGCode]            = useState<string | null>(null)
@@ -40,7 +47,11 @@ export default function HybridPlanner() {
     mutationFn: () =>
       jobsApi.generateToolpaths(
         jobId, toolId, machineEveryN, machineInnerWalls, avoidSupports,
-        supportClearanceMm, autoMachiningFrequency, zSafetyOffsetMm, spindleRpmOverride
+        supportClearanceMm, autoMachiningFrequency, zSafetyOffsetMm, spindleRpmOverride,
+        spindleStartX, spindleStartY, spindleStartZ,
+        spindleEndSame ? spindleStartX : spindleEndX,
+        spindleEndSame ? spindleStartY : spindleEndY,
+        spindleEndSame ? spindleStartZ : spindleEndZ
       ),
     onSuccess: async (result: any) => {
       qc.invalidateQueries({ queryKey: ['jobs'] })
@@ -292,6 +303,61 @@ export default function HybridPlanner() {
                   <span className="text-xs text-gray-600">(tool stays this far from supports)</span>
                 </div>
               )}
+
+              {/* Spindle Positions */}
+              <div className="border-t border-gray-700 pt-3 space-y-3">
+                <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Spindle Positions</p>
+                <div>
+                  <p className="text-xs text-gray-400 mb-1.5">Start Position</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(['X','Y'] as const).map((axis, i) => (
+                      <div key={axis} className="space-y-0.5">
+                        <label className="text-[10px] text-gray-500">{axis}</label>
+                        <input type="number" step={0.1}
+                          value={i === 0 ? spindleStartX : spindleStartY}
+                          onChange={e => i === 0 ? setSpindleStartX(+e.target.value) : setSpindleStartY(+e.target.value)}
+                          className="input text-xs py-1 text-center w-full" />
+                      </div>
+                    ))}
+                    <div className="space-y-0.5">
+                      <label className="text-[10px] text-gray-500">Z (blank=safe)</label>
+                      <input type="number" step={0.5}
+                        value={spindleStartZ ?? ''}
+                        placeholder="auto"
+                        onChange={e => setSpindleStartZ(e.target.value ? +e.target.value : null)}
+                        className="input text-xs py-1 text-center w-full" />
+                    </div>
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input type="checkbox" checked={spindleEndSame} onChange={e => setSpindleEndSame(e.target.checked)} className="w-3.5 h-3.5 accent-blue-500" />
+                  <span className="text-xs text-gray-400">End = Start position</span>
+                </label>
+                {!spindleEndSame && (
+                  <div>
+                    <p className="text-xs text-gray-400 mb-1.5">End Position</p>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(['X','Y'] as const).map((axis, i) => (
+                        <div key={axis} className="space-y-0.5">
+                          <label className="text-[10px] text-gray-500">{axis}</label>
+                          <input type="number" step={0.1}
+                            value={i === 0 ? spindleEndX : spindleEndY}
+                            onChange={e => i === 0 ? setSpindleEndX(+e.target.value) : setSpindleEndY(+e.target.value)}
+                            className="input text-xs py-1 text-center w-full" />
+                        </div>
+                      ))}
+                      <div className="space-y-0.5">
+                        <label className="text-[10px] text-gray-500">Z (blank=safe)</label>
+                        <input type="number" step={0.5}
+                          value={spindleEndZ ?? ''}
+                          placeholder="auto"
+                          onChange={e => setSpindleEndZ(e.target.value ? +e.target.value : null)}
+                          className="input text-xs py-1 text-center w-full" />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="flex gap-3 pt-2">

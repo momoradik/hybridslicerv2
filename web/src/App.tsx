@@ -6,8 +6,10 @@ import PrintSettings from './pages/PrintSettings'
 import MachineConfig from './pages/MachineConfig'
 import ToolLibrary from './pages/ToolLibrary'
 import HybridPlanner from './pages/HybridPlanner'
+import HybridPreview from './pages/HybridPreview'
 import CustomGCode from './pages/CustomGCode'
 import Calibration from './pages/Calibration'
+import PelletCalibration from './pages/PelletCalibration'
 import BrandingPage from './pages/BrandingPage'
 import GCodePage from './pages/GCodePage'
 import NotFound from './pages/NotFound'
@@ -31,8 +33,10 @@ export default function App() {
             <Route path="machine-config"     element={<MachineConfig />} />
             <Route path="tools"              element={<ToolLibrary />} />
             <Route path="hybrid-planner"     element={<HybridPlanner />} />
+            <Route path="hybrid-preview"     element={<HybridPreview />} />
             <Route path="custom-gcode"       element={<CustomGCode />} />
             <Route path="calibration"        element={<Calibration />} />
+            <Route path="pellet-calibration" element={<PelletCalibration />} />
             <Route path="jobs/:id/gcode"     element={<GCodePage />} />
             {import.meta.env.DEV && (
               <Route path="settings/branding" element={<BrandingPage />} />
