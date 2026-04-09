@@ -74,11 +74,11 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
             foreach (var seg in request.SupportPaths)
             {
                 if (seg.Count < 2) continue;
-                var geom = BuildGeometry(seg);
-                if (geom is null || geom.IsEmpty) continue;
+                var supportGeom = BuildGeometry(seg);
+                if (supportGeom is null || supportGeom.IsEmpty) continue;
                 try
                 {
-                    var buffered = geom.Buffer(supportBuffer, 16);
+                    var buffered = supportGeom.Buffer(supportBuffer, 16);
                     forbiddenZone = forbiddenZone is null
                         ? buffered
                         : forbiddenZone.Union(buffered);
@@ -90,7 +90,12 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
             }
 
             if (forbiddenZone is not null)
+            {
+                // Normalize the forbidden zone topology to reduce NTS exceptions during Difference.
+                // Buffer(0) is the standard NTS technique for self-union / topology repair.
+                try { forbiddenZone = forbiddenZone.Buffer(0); } catch { /* proceed unnormalized */ }
                 _logger.LogDebug("Forbidden zone built: {Area:F1} mm² at Z={Z}", forbiddenZone.Area, request.ZHeightMm);
+            }
         }
 
         var gcodeBuilder       = new StringBuilder();
@@ -127,6 +132,10 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
                 continue;
             }
 
+            // Normalize compensated geometry — fixes self-intersecting rings that Cura
+            // sometimes produces, which cause NTS topology exceptions during Difference.
+            try { compensated = compensated.Buffer(0); } catch { /* proceed unnormalized */ }
+
             // Detect ToolTooWide:
             // • Outer walls: CRC expands outward so compensated is always ≥ original — only flag if truly empty.
             // • Inner walls: CRC shrinks inward — also flag if area is negligible (pocket too small for tool).
@@ -140,24 +149,63 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
                 continue;
             }
 
-            // Subtract support forbidden zone from milling area
-            if (forbiddenZone is not null)
+            // ── Build local forbidden zone for this segment ────────────────────────────
+            // The local forbidden zone combines:
+            //   (a) The global support forbidden zone (all support paths buffered by clearance)
+            //   (b) For outer walls: the wall nozzle-path polygon itself — this represents the
+            //       solid printed material. Adding it explicitly prevents topology artifacts from
+            //       the Difference operation from producing toolpath segments that enter the part
+            //       interior. The CRC-offset outer ring should already be outside this polygon,
+            //       so subtracting geom is a safe no-op for correct geometry, and a safety net
+            //       for degenerate geometry.
+            //
+            // INVARIANT: the resulting toolpath must NEVER enter solid printed material.
+            // Fail CLOSED: if any set-operation fails, skip the region entirely rather than
+            // producing a potentially unsafe path.
+            Geometry? localForbidden = forbiddenZone;
+            if (forbiddenZone is not null && request.IsOuterWall && geom is Polygon)
             {
                 try
                 {
-                    compensated = compensated.Difference(forbiddenZone);
+                    var geomNorm = geom.Buffer(0); // normalize before union
+                    localForbidden = forbiddenZone.Union(geomNorm);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Support difference failed at Z={Z}, using full area", request.ZHeightMm);
+                    _logger.LogWarning(ex,
+                        "Could not add part interior to forbidden zone at Z={Z}, using support-only",
+                        request.ZHeightMm);
+                    // safe fallback: use support-only forbidden zone
+                }
+            }
+
+            // Subtract the forbidden zone from the milling area
+            if (localForbidden is not null)
+            {
+                Geometry? clipped;
+                try
+                {
+                    clipped = compensated.Difference(localForbidden);
+                }
+                catch (Exception ex)
+                {
+                    // CRITICAL: fail CLOSED — on any topology exception, skip this region.
+                    // Do NOT fall through with the unclipped path: that could produce toolpath
+                    // moves that traverse support regions or enter solid printed geometry.
+                    _logger.LogWarning(ex,
+                        "Toolpath Difference failed at Z={Z} — region skipped (fail-closed for safety)",
+                        request.ZHeightMm);
+                    unmachinableRegions.Add(new UnmachinableRegion(request.ZHeightMm, "SupportBlocked", segBounds));
+                    continue;
                 }
 
-                if (compensated is null || compensated.IsEmpty)
+                if (clipped is null || clipped.IsEmpty)
                 {
                     _logger.LogDebug("Segment at Z={Z} fully inside forbidden zone — SupportBlocked", request.ZHeightMm);
                     unmachinableRegions.Add(new UnmachinableRegion(request.ZHeightMm, "SupportBlocked", segBounds));
                     continue;
                 }
+                compensated = clipped;
             }
 
             // Extract exterior ring(s) from the valid milling geometry

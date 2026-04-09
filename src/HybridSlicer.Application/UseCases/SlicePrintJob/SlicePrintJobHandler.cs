@@ -60,6 +60,7 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
                 TravelSpeedMmS:        profile.TravelSpeedMmS,
                 InfillSpeedMmS:        profile.InfillSpeedMmS,
                 WallSpeedMmS:          profile.WallSpeedMmS,
+                InnerWallSpeedMmS:     profile.InnerWallSpeedMmS,
                 FirstLayerSpeedMmS:    profile.FirstLayerSpeedMmS,
                 InfillDensityPct:      job.InfillDensityPct ?? profile.InfillDensityPct,
                 InfillPattern:         string.IsNullOrWhiteSpace(job.InfillPattern) ? profile.InfillPattern : job.InfillPattern,
@@ -76,7 +77,8 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
                 BedWidthMm:            machine.BedWidthMm,
                 BedDepthMm:            machine.BedDepthMm,
                 BedHeightMm:           machine.BedHeightMm,
-                NozzleDiameterMm:      machine.NozzleDiameterMm);
+                NozzleDiameterMm:      profile.NozzleDiameterMm > 0 ? profile.NozzleDiameterMm : machine.NozzleDiameterMm,
+                MaterialFlowPct:       profile.MaterialFlowPct);
 
             var result = await _slicer.SliceAsync(job.StlFilePath, parameters, ct);
 

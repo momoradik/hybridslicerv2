@@ -177,6 +177,8 @@ export default function StlImport() {
   const [pfPrintTemp, setPfPrintTemp]           = useState(210)
   const [pfBedTemp, setPfBedTemp]               = useState(60)
   const [pfInfillPattern, setPfInfillPattern]   = useState('grid')
+  const [pfFlow, setPfFlow]                     = useState(100)
+  const [pfNozzle, setPfNozzle]                 = useState(0.4)
 
   // Material modal state
   const [materialModal, setMaterialModal]       = useState(false)
@@ -305,6 +307,7 @@ export default function StlImport() {
 
   const selectedModel   = models.find(m => m.id === selectedId) ?? null
   const selectedMachine = machines.find(m => m.id === machineId)
+  const selectedProfile = profiles.find(p => p.id === profileId)
 
   const addFile = useCallback((f: File) => {
     if (!f.name.toLowerCase().endsWith('.stl')) return
@@ -733,7 +736,7 @@ export default function StlImport() {
                 {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
               <button
-                onClick={() => { setPfName(''); setProfileModal(true) }}
+                onClick={() => { setPfName(''); setPfNozzle(0.4); setProfileModal(true) }}
                 className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-gray-200 transition"
                 title="Add print profile"
               >+</button>
@@ -767,6 +770,33 @@ export default function StlImport() {
             </div>
           </Field>
         </section>
+
+        {/* Active profile settings summary */}
+        {(selectedProfile || selectedMachine) && (
+          <div className="flex flex-wrap gap-1.5 text-xs">
+            {selectedMachine && (
+              <span className="bg-gray-800 border border-gray-700 rounded px-2 py-0.5 text-gray-400">
+                Nozzle Ø{selectedMachine.nozzleDiameterMm} mm
+              </span>
+            )}
+            {selectedProfile && (
+              <>
+                <span className="bg-gray-800 border border-gray-700 rounded px-2 py-0.5 text-gray-400">
+                  Layer {selectedProfile.layerHeightMm} mm
+                </span>
+                <span className="bg-gray-800 border border-gray-700 rounded px-2 py-0.5 text-gray-400">
+                  {selectedProfile.printSpeedMmS} mm/s
+                </span>
+                <span className="bg-gray-800 border border-gray-700 rounded px-2 py-0.5 text-gray-400">
+                  Flow {selectedProfile.materialFlowPct ?? 100}%
+                </span>
+                <span className="bg-gray-800 border border-gray-700 rounded px-2 py-0.5 text-gray-400">
+                  {selectedProfile.printTemperatureDegC}°C / {selectedProfile.bedTemperatureDegC}°C
+                </span>
+              </>
+            )}
+          </div>
+        )}
 
         <Divider />
 
@@ -1131,6 +1161,9 @@ export default function StlImport() {
               <input className="input w-full" value={pfName} onChange={e => setPfName(e.target.value)} placeholder="My Profile" />
             </MField>
             <div className="grid grid-cols-2 gap-3">
+              <MField label="Nozzle Diameter (mm)">
+                <NumInput value={pfNozzle} min={0} max={5} step={0.05} onChange={setPfNozzle} />
+              </MField>
               <MField label="Layer Height (mm)">
                 <NumInput value={pfLayerH} min={0.05} max={0.5} step={0.05} onChange={setPfLayerH} />
               </MField>
@@ -1160,23 +1193,28 @@ export default function StlImport() {
                 <NumInput value={pfBedTemp} min={0} max={150} onChange={setPfBedTemp} />
               </MField>
             </div>
-            <MField label="Infill Pattern">
-              <select className="input w-full" value={pfInfillPattern} onChange={e => setPfInfillPattern(e.target.value)}>
-                {['grid','lines','triangles','trihexagon','cubic','concentric','zigzag','cross','gyroid','honeycomb','lightning'].map(p => (
-                  <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
-                ))}
-              </select>
-            </MField>
+            <div className="grid grid-cols-2 gap-3">
+              <MField label="Infill Pattern">
+                <select className="input w-full" value={pfInfillPattern} onChange={e => setPfInfillPattern(e.target.value)}>
+                  {['grid','lines','triangles','trihexagon','cubic','concentric','zigzag','cross','gyroid','honeycomb','lightning'].map(p => (
+                    <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
+                  ))}
+                </select>
+              </MField>
+              <MField label="Flow (%)">
+                <NumInput value={pfFlow} min={50} max={200} step={1} onChange={setPfFlow} />
+              </MField>
+            </div>
             <div className="flex gap-3 justify-end pt-2">
               <button onClick={() => setProfileModal(false)}
                 className="px-4 py-2 bg-gray-800 text-gray-300 rounded-lg text-sm">Cancel</button>
               <button
                 onClick={() => createProfileMutation.mutate({
-                  name: pfName, layerHeightMm: pfLayerH, lineWidthMm: pfLineW,
+                  name: pfName, nozzleDiameterMm: pfNozzle, layerHeightMm: pfLayerH, lineWidthMm: pfLineW,
                   wallCount: pfWalls, printSpeedMmS: pfPrintSpeed, travelSpeedMmS: pfTravelSpeed,
                   infillDensityPct: pfInfill, infillPattern: pfInfillPattern,
                   printTemperatureDegC: pfPrintTemp, bedTemperatureDegC: pfBedTemp,
-                  retractLengthMm: 5, supportEnabled: false,
+                  retractLengthMm: 5, supportEnabled: false, materialFlowPct: pfFlow,
                 })}
                 disabled={!pfName.trim() || createProfileMutation.isPending}
                 className="px-4 py-2 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm"

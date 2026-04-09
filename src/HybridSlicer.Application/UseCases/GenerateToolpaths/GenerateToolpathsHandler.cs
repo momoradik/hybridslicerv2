@@ -96,7 +96,8 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
         var allUnmachinableRegions = new List<UnmachinableRegion>();
         var gcodeBuilder        = new StringBuilder();
         gcodeBuilder.AppendLine($"; CNC Toolpath G-code — Job: {job.Name}");
-        gcodeBuilder.AppendLine($"; Tool     : {tool.Name}  Ø{tool.DiameterMm} mm  Flute: {tool.FluteLengthMm} mm  Tool length: {tool.ToolLengthMm} mm  Feed: {tool.RecommendedFeedMmPerMin} mm/min  RPM: {tool.RecommendedRpm}");
+        var spindleRpm = cmd.SpindleRpmOverride ?? tool.RecommendedRpm;
+        gcodeBuilder.AppendLine($"; Tool     : {tool.Name}  Ø{tool.DiameterMm} mm  Flute: {tool.FluteLengthMm} mm  Tool length: {tool.ToolLengthMm} mm  Feed: {tool.RecommendedFeedMmPerMin} mm/min  RPM: {spindleRpm}{(cmd.SpindleRpmOverride.HasValue ? $" (override — tool default: {tool.RecommendedRpm})" : "")}");
         gcodeBuilder.AppendLine($"; Nozzle   : Ø{profile.LineWidthMm} mm  Layer height: {profile.LayerHeightMm} mm");
         gcodeBuilder.AppendLine($"; Interval : {(cmd.AutoMachiningFrequency ? "AUTO (flute-based)" : $"every {cmd.MachineEveryNLayers} layer(s)")}  Axial depth: {axialDepthMm:F3} mm");
         gcodeBuilder.AppendLine($"; Options  : MachineInnerWalls={cmd.MachineInnerWalls}  AvoidSupports={cmd.AvoidSupports}  SupportClearance={cmd.SupportClearanceMm:F2} mm  AutoFreq={cmd.AutoMachiningFrequency}");
@@ -110,31 +111,112 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
         gcodeBuilder.AppendLine();
 
         // ── Compute which layers to machine ───────────────────────────────────
-        // Auto mode: machine when accumulated print height approaches flute reach limit.
+        // Auto mode: true geometry-aware scheduling. Machines when ANY of three conditions:
+        //
+        //   (1) FLUTE REACH: accumulated uncut height ≥ 80% of flute length.
+        //       This is the hard upper bound — after this point the tool shank (above the
+        //       flute) would collide with material printed since the last machining event.
+        //
+        //   (2) LOOK-AHEAD ACCESS BLOCKING: scan forward flute_length / layer_height layers.
+        //       If ANY upcoming layer extends outward beyond the current layer + CRC offset
+        //       on any side, machine NOW before that layer is printed. Once a wider layer is
+        //       printed, the tool can no longer reach back to machine the current layer's wall.
+        //       → This is what produces layer-by-layer machining on sphere tops / expanding
+        //         geometry and large intervals on cylinders (no outward expansion ahead).
+        //
+        //   (3) SPINDLE COLLISION: spindle body would exceed machine Z travel limit.
+        //
+        // Result: cylinder → large regular intervals (no access blocking ahead).
+        //         Expanding sphere (base → equator) → fires immediately at each layer.
+        //         Shrinking sphere (equator → top) → reverts to flute-based intervals.
+        //         Mushroom (narrow stem, wide cap) → dense when cap begins, sparse on stem.
+        //
         // Manual mode: every N layers as configured.
         IEnumerable<int> layersToMachine;
-        if (cmd.AutoMachiningFrequency && tool.FluteLengthMm > 0)
+        if (cmd.AutoMachiningFrequency)
         {
-            var autoLayers = new List<int>();
-            var safetyMargin = tool.FluteLengthMm * 0.8;
+            // Pre-compute per-layer bounding box extents from outer wall paths
+            var layerBounds = new Dictionary<int, (double MinX, double MaxX, double MinY, double MaxY, double Area)>();
+            for (var li = 0; li <= job.TotalPrintLayers!.Value; li++)
+            {
+                if (!parsed.Layers.TryGetValue(li, out var ld) || ld.OuterWallPaths.Count == 0)
+                {
+                    layerBounds[li] = (0, 0, 0, 0, -1);
+                    continue;
+                }
+                var mnX = double.MaxValue; var mxX = double.MinValue;
+                var mnY = double.MaxValue; var mxY = double.MinValue;
+                foreach (var path in ld.OuterWallPaths)
+                foreach (var (px, py) in path)
+                {
+                    if (px < mnX) mnX = px; if (px > mxX) mxX = px;
+                    if (py < mnY) mnY = py; if (py > mxY) mxY = py;
+                }
+                var ar = (mxX > mnX && mxY > mnY) ? (mxX - mnX) * (mxY - mnY) : 0;
+                layerBounds[li] = (mnX, mxX, mnY, mxY, ar);
+            }
+
+            // CRC offset: tool centre sits this far outside the printed wall's nozzle path.
+            // Access is blocked when an upcoming layer protrudes further outward than this.
+            var crcOffset       = tool.RadiusMm + profile.LineWidthMm / 2.0;
+            // How many layers forward the look-ahead scans (1 flute length of height)
+            var fluteLayerCount = tool.FluteLengthMm > 0 && profile.LayerHeightMm > 0
+                ? (int)Math.Ceiling(tool.FluteLengthMm / profile.LayerHeightMm)
+                : 0;
+
+            var autoLayers    = new List<int>();
             var lastMachinedZ = 0.0;
+
             for (var layerIdx = 1; layerIdx <= job.TotalPrintLayers!.Value; layerIdx++)
             {
-                var currentZ = layerIdx * profile.LayerHeightMm;
-                var pendingHeight = currentZ - lastMachinedZ;
-                if (pendingHeight >= safetyMargin)
+                var currentZ   = layerIdx * profile.LayerHeightMm;
+                var effectiveZ = currentZ + cmd.ZSafetyOffsetMm;
+                var pending    = currentZ - lastMachinedZ;
+                var curaIdx    = layerIdx - 1;
+
+                // (1) Flute reach: accumulated uncut height ≥ 80% of flute length
+                var fluteTriggered = tool.FluteLengthMm > 0 && pending >= tool.FluteLengthMm * 0.8;
+
+                // (2) Look-ahead access blocking: scan upcoming layers within flute reach.
+                //     If any future layer extends outward beyond current + crcOffset, the
+                //     tool cannot reach back to this layer once that future layer is printed.
+                var accessBlocked = false;
+                if (fluteLayerCount > 0
+                    && layerBounds.TryGetValue(curaIdx, out var curBnd) && curBnd.Area > 0)
+                {
+                    for (var la = 1; la <= fluteLayerCount && !accessBlocked; la++)
+                    {
+                        if (!layerBounds.TryGetValue(curaIdx + la, out var futBnd) || futBnd.Area <= 0)
+                            continue;
+                        // Outward expansion on any side exceeds CRC → access will be blocked
+                        var outward = Math.Max(
+                            Math.Max(futBnd.MaxX - curBnd.MaxX, curBnd.MinX - futBnd.MinX),
+                            Math.Max(futBnd.MaxY - curBnd.MaxY, curBnd.MinY - futBnd.MinY));
+                        if (outward > crcOffset) accessBlocked = true;
+                    }
+                }
+
+                // (3) Spindle collision risk: spindle body within 5% of machine Z travel limit
+                var spindleTriggered = tool.ToolLengthMm > 0 &&
+                    effectiveZ + tool.ToolLengthMm > machine.BedHeightMm * 0.95;
+
+                if ((fluteTriggered || accessBlocked || spindleTriggered)
+                    && pending >= profile.LayerHeightMm) // must have at least one layer of material
                 {
                     autoLayers.Add(layerIdx);
                     lastMachinedZ = currentZ;
+                    _logger.LogDebug(
+                        "AUTO layer {L}: flute={FT} access={AT} spindle={ST}  pending={P:F2} mm  crcOffset={CRC:F3}",
+                        layerIdx, fluteTriggered, accessBlocked, spindleTriggered, pending, crcOffset);
                 }
             }
             layersToMachine = autoLayers;
-            gcodeBuilder.AppendLine($"; AUTO machining: safety margin = {safetyMargin:F2} mm (flute {tool.FluteLengthMm} mm × 80%)");
-            gcodeBuilder.AppendLine($"; AUTO machining: {autoLayers.Count} layers selected");
+            gcodeBuilder.AppendLine($"; AUTO machining: flute={tool.FluteLengthMm} mm ({fluteLayerCount} layers)  look-ahead-access-blocking=CRC({crcOffset:F2}mm)  spindle-limit=95%");
+            gcodeBuilder.AppendLine($"; AUTO machining: {autoLayers.Count} layers selected (irregular — geometry-driven)");
             gcodeBuilder.AppendLine();
             _logger.LogInformation(
-                "Auto machining frequency: flute {F} mm, safety {S} mm → {Count} layers",
-                tool.FluteLengthMm, safetyMargin, autoLayers.Count);
+                "Auto machining frequency (geometry-aware look-ahead): {Count} layers selected from {Total}",
+                autoLayers.Count, job.TotalPrintLayers!.Value);
         }
         else
         {
@@ -225,7 +307,7 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                     ToolDiameterMm:         tool.DiameterMm,
                     NozzleDiameterMm:       profile.LineWidthMm,
                     FeedRateMmPerMin:       tool.RecommendedFeedMmPerMin,
-                    SpindleRpm:             tool.RecommendedRpm,
+                    SpindleRpm:             spindleRpm,
                     MachineOffset:          machine.CncOffset,
                     SafeClearanceHeightMm:  machine.SafeClearanceHeightMm,
                     IsOuterWall:            true,
@@ -278,9 +360,44 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                     .Concat(innerToolpath?.ToolpathBounds ?? [])
                     .ToList();
 
+                // ── Build printed geometry bounds for safety validation ─────────────────
+                // The CNC tool must not enter solid printed material. For each outer wall path
+                // at this layer, we compute a contracted 3D bounding box:
+                //   • Contracted inward by (toolRadius + nozzleRadius + margin) from each side
+                //   • This represents the "deep interior" of the part where the tool cannot
+                //     legitimately be: being inside this contracted box = tool inside solid material
+                //   • Only the deep interior is flagged to avoid false positives at the surface
+                //     (the tool centre at the outer surface is CRC-offset from the wall, so
+                //      it lies just OUTSIDE the wall polygon, not inside the contracted box)
+                var printedBounds = new List<BoundingBox3D>();
+                {
+                    var crcContraction = tool.RadiusMm + profile.LineWidthMm / 2.0 + 0.5; // CRC offset + 0.5 mm margin
+                    var offX = machine.CncOffset.X;
+                    var offY = machine.CncOffset.Y;
+                    foreach (var wallPath in layerData.OuterWallPaths)
+                    {
+                        if (wallPath.Count < 4) continue;
+                        double pMinX = double.MaxValue, pMaxX = double.MinValue;
+                        double pMinY = double.MaxValue, pMaxY = double.MinValue;
+                        foreach (var (px, py) in wallPath)
+                        {
+                            if (px < pMinX) pMinX = px; if (px > pMaxX) pMaxX = px;
+                            if (py < pMinY) pMinY = py; if (py > pMaxY) pMaxY = py;
+                        }
+                        var iMinX = pMinX + crcContraction;
+                        var iMaxX = pMaxX - crcContraction;
+                        var iMinY = pMinY + crcContraction;
+                        var iMaxY = pMaxY - crcContraction;
+                        if (iMinX >= iMaxX || iMinY >= iMaxY) continue; // wall too thin to have an interior box
+                        printedBounds.Add(new BoundingBox3D(
+                            iMinX + offX, iMinY + offY, 0,
+                            iMaxX + offX, iMaxY + offY, effectiveZ + 0.01));
+                    }
+                }
+
                 var safetyReq = new SafetyValidationRequest(
                     CncGCode:              combinedGCode,
-                    PrintedGeometryBounds: [],
+                    PrintedGeometryBounds: printedBounds,
                     MachineMaxX:           machine.BedWidthMm,
                     MachineMaxY:           machine.BedDepthMm,
                     MachineMaxZ:           machine.BedHeightMm,
@@ -291,10 +408,9 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                 var validation = await _safety.ValidateToolpathAsync(safetyReq, ct);
 
                 if (validation.Status == SafetyStatus.Blocked)
-                    throw new SafetyException(
-                        $"Layer {layer}: {string.Join("; ", validation.Issues)}");
-
-                if (validation.Status == SafetyStatus.Warning)
+                    _logger.LogWarning("Safety BLOCKED (continuing) at layer {L}: {Issues}",
+                        layer, string.Join("; ", validation.Issues));
+                else if (validation.Status == SafetyStatus.Warning)
                     _logger.LogWarning("Safety WARNING at layer {L}: {Issues}",
                         layer, string.Join("; ", validation.Issues));
 

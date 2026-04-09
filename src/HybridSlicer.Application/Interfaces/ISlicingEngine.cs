@@ -31,7 +31,8 @@ public sealed record SlicingParameters(
     double PrintSpeedMmS,
     double TravelSpeedMmS,
     double InfillSpeedMmS,
-    double WallSpeedMmS,
+    double WallSpeedMmS,       // speed_wall_0 (outer wall)
+    double InnerWallSpeedMmS,  // speed_wall_x (inner wall)
     double FirstLayerSpeedMmS,
 
     // Infill
@@ -62,7 +63,10 @@ public sealed record SlicingParameters(
     double BedWidthMm,
     double BedDepthMm,
     double BedHeightMm,
-    double NozzleDiameterMm);
+    double NozzleDiameterMm,
+
+    // Extrusion
+    double MaterialFlowPct = 100.0);
 
 public sealed record SlicingResult(
     string GCodeFilePath,

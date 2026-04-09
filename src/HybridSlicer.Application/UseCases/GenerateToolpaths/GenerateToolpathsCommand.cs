@@ -27,7 +27,12 @@ public sealed record GenerateToolpathsCommand(
     /// Default 0 = machine at exact layer surface. Positive values add safety distance in Z.
     /// Applied consistently from the first to the last machining layer.
     /// </summary>
-    double ZSafetyOffsetMm = 0.0) : IRequest<GenerateToolpathsResult>;
+    double ZSafetyOffsetMm = 0.0,
+    /// <summary>
+    /// Optional spindle speed override (RPM). When null, the tool's RecommendedRpm is used.
+    /// Allows the user to fine-tune spindle speed per job without changing the tool definition.
+    /// </summary>
+    int? SpindleRpmOverride = null) : IRequest<GenerateToolpathsResult>;
 
 public sealed record GenerateToolpathsResult(
     Guid                 JobId,

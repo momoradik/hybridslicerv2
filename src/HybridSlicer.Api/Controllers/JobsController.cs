@@ -87,7 +87,8 @@ public sealed class JobsController : ControllerBase
                 request.AvoidSupports,
                 request.SupportClearanceMm,
                 request.AutoMachiningFrequency,
-                request.ZSafetyOffsetMm), ct);
+                request.ZSafetyOffsetMm,
+                request.SpindleRpmOverride), ct);
         return Accepted(result);
     }
 
@@ -175,5 +176,6 @@ public record GenerateToolpathsRequest(
     bool   AvoidSupports            = false,
     double SupportClearanceMm       = 2.0,
     bool   AutoMachiningFrequency   = false,
-    double ZSafetyOffsetMm          = 0.0);
+    double ZSafetyOffsetMm          = 0.0,
+    int?   SpindleRpmOverride       = null);
 public record PlanHybridRequest(int MachineEveryNLayers);

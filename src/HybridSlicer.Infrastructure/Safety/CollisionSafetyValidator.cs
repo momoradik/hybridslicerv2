@@ -78,15 +78,14 @@ public sealed class CollisionSafetyValidator : ISafetyValidator
         {
             status = SafetyStatus.Clear;
         }
-        else if (issues.Any(i => i.Contains("intersects") || i.Contains("SpindleCollision")))
+        else if (issues.Any(i => i.Contains("intersects") || i.Contains("SpindleCollision")
+                               || i.Contains("envelope")))
         {
+            // Envelope violations, part-geometry intersections, and spindle collisions are all
+            // hard stops: exceeding machine travel limits can destroy hardware just as surely as
+            // driving the tool through the printed part.
             status = SafetyStatus.Blocked;
             _logger.LogWarning("Safety BLOCKED for toolpath: {Count} issues", issues.Count);
-        }
-        else if (issues.Any(i => i.Contains("envelope")))
-        {
-            status = SafetyStatus.Warning;
-            _logger.LogWarning("Safety WARNING (envelope) for toolpath: {Count} issues", issues.Count);
         }
         else
         {

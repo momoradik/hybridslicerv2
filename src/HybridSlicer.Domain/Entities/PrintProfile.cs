@@ -48,6 +48,15 @@ public class PrintProfile
     // Filament
     public double FilamentDiameterMm { get; private set; } = 1.75;
 
+    // Extrusion
+    public double MaterialFlowPct { get; private set; } = 100.0;
+
+    // Nozzle — overrides machine profile when > 0; 0 = use machine nozzle diameter
+    public double NozzleDiameterMm { get; private set; } = 0.0;
+
+    // Advanced speeds (mm/s)
+    public double InnerWallSpeedMmS { get; private set; } = 60;
+
     // Skirt / brim
     public bool BrimEnabled { get; private set; }
     public int BrimLineCount { get; private set; } = 8;
@@ -113,6 +122,30 @@ public class PrintProfile
         SupportEnabled = enabled;
         SupportType = type;
         SupportOverhangAngleDeg = overhangAngle;
+        return Touch();
+    }
+
+    public PrintProfile WithFlow(double flowPct)
+    {
+        if (flowPct is <= 0 or > 200)
+            throw new DomainException("INVALID_FLOW", "Material flow must be 1–200 %.");
+        MaterialFlowPct = flowPct;
+        return Touch();
+    }
+
+    public PrintProfile WithNozzleDiameter(double mm)
+    {
+        if (mm < 0 || mm > 5)
+            throw new DomainException("INVALID_NOZZLE", "Nozzle diameter must be 0–5 mm (0 = use machine default).");
+        NozzleDiameterMm = mm;
+        return Touch();
+    }
+
+    public PrintProfile WithInnerWallSpeed(double mmS)
+    {
+        if (mmS < 0 || mmS > 1000)
+            throw new DomainException("INVALID_SPEED", "Speed must be 0–1000 mm/s.");
+        InnerWallSpeedMmS = mmS;
         return Touch();
     }
 

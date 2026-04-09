@@ -143,7 +143,8 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         sb.Append($" -s speed_print={p.PrintSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s speed_travel={p.TravelSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s speed_infill={p.InfillSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s speed_wall={p.WallSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s speed_wall_0={p.WallSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s speed_wall_x={p.InnerWallSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s speed_layer_0={p.FirstLayerSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
         // Infill density — set both the percentage AND the derived line-distance so CuraEngine 5.x
         // cannot fall back to a cached formula value from the definition file.
@@ -187,6 +188,7 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         sb.Append($" -s infill_line_distance={infillLineDist.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s infill_pattern={p.InfillPattern}");
         sb.Append($" -s material_diameter={p.FilamentDiameterMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
+        sb.Append($" -s material_flow={p.MaterialFlowPct.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s machine_nozzle_size={p.NozzleDiameterMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s retraction_amount={p.RetractLengthMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.Append($" -s retraction_speed={p.RetractSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");

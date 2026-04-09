@@ -33,16 +33,31 @@ export interface MachineOffset {
 export interface PrintProfile {
   id: string
   name: string
-  layerHeightMm: number
-  lineWidthMm: number
+  // Basic settings
+  nozzleDiameterMm: number        // 0 = use machine default; machine_nozzle_size
+  layerHeightMm: number           // layer_height
+  lineWidthMm: number             // line_width (= nozzle diameter by default)
+  materialFlowPct: number         // material_flow
+  // Print speeds (mm/s)
+  printSpeedMmS: number           // speed_print
+  travelSpeedMmS: number          // speed_travel
+  wallSpeedMmS: number            // speed_wall_0 (outer wall)
+  innerWallSpeedMmS: number       // speed_wall_x (inner wall)
+  infillSpeedMmS: number          // speed_infill
+  firstLayerSpeedMmS: number      // speed_layer_0
+  // Structure
   wallCount: number
-  printSpeedMmS: number
-  travelSpeedMmS: number
   infillDensityPct: number
   infillPattern: string
+  // Temperature (°C)
   printTemperatureDegC: number
   bedTemperatureDegC: number
+  // Retraction
   retractLengthMm: number
+  // Cooling
+  coolingEnabled: boolean
+  coolingFanSpeedPct: number
+  // Support
   supportEnabled: boolean
   version: string
 }

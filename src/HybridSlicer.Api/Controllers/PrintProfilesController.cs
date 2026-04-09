@@ -32,7 +32,10 @@ public sealed class PrintProfilesController : ControllerBase
                         req.InfillSpeedMmS, req.WallSpeedMmS, req.FirstLayerSpeedMmS)
             .WithTemperatures(req.PrintTemperatureDegC, req.BedTemperatureDegC)
             .WithInfill(req.InfillDensityPct, req.InfillPattern)
-            .WithSupport(req.SupportEnabled, req.SupportType, req.SupportOverhangAngleDeg);
+            .WithSupport(req.SupportEnabled, req.SupportType, req.SupportOverhangAngleDeg)
+            .WithFlow(req.MaterialFlowPct)
+            .WithNozzleDiameter(req.NozzleDiameterMm)
+            .WithInnerWallSpeed(req.InnerWallSpeedMmS);
 
         await _repo.AddAsync(profile, ct);
         return CreatedAtAction(nameof(GetById), new { id = profile.Id }, profile);
@@ -51,7 +54,10 @@ public sealed class PrintProfilesController : ControllerBase
                         req.InfillSpeedMmS, req.WallSpeedMmS, req.FirstLayerSpeedMmS)
             .WithTemperatures(req.PrintTemperatureDegC, req.BedTemperatureDegC)
             .WithInfill(req.InfillDensityPct, req.InfillPattern)
-            .WithSupport(req.SupportEnabled, req.SupportType, req.SupportOverhangAngleDeg);
+            .WithSupport(req.SupportEnabled, req.SupportType, req.SupportOverhangAngleDeg)
+            .WithFlow(req.MaterialFlowPct)
+            .WithNozzleDiameter(req.NozzleDiameterMm)
+            .WithInnerWallSpeed(req.InnerWallSpeedMmS);
 
         await _repo.UpdateAsync(profile, ct);
         return Ok(profile);
@@ -90,4 +96,7 @@ public record CreatePrintProfileRequest(
     double SupportOverhangAngleDeg = 50,
     bool   CoolingEnabled         = true,
     int    CoolingFanSpeedPct     = 100,
-    double FilamentDiameterMm     = 1.75);
+    double FilamentDiameterMm     = 1.75,
+    double MaterialFlowPct        = 100.0,
+    double NozzleDiameterMm       = 0.0,
+    double InnerWallSpeedMmS      = 60.0);

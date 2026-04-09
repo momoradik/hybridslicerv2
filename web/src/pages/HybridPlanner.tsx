@@ -25,6 +25,7 @@ export default function HybridPlanner() {
   const [supportClearanceMm,    setSupportClearanceMm]    = useState(2.0)
   const [autoMachiningFrequency, setAutoMachiningFrequency] = useState(false)
   const [zSafetyOffsetMm,       setZSafetyOffsetMm]       = useState(0.0)
+  const [spindleRpmOverride,    setSpindleRpmOverride]    = useState<number | null>(null)
   const [activeTab,             setActiveTab]             = useState<Tab>('config')
   const [toolpathGCode,         setToolpathGCode]         = useState<string | null>(null)
   const [printGCode,            setPrintGCode]            = useState<string | null>(null)
@@ -39,7 +40,7 @@ export default function HybridPlanner() {
     mutationFn: () =>
       jobsApi.generateToolpaths(
         jobId, toolId, machineEveryN, machineInnerWalls, avoidSupports,
-        supportClearanceMm, autoMachiningFrequency, zSafetyOffsetMm
+        supportClearanceMm, autoMachiningFrequency, zSafetyOffsetMm, spindleRpmOverride
       ),
     onSuccess: async (result: any) => {
       qc.invalidateQueries({ queryKey: ['jobs'] })
@@ -196,18 +197,42 @@ export default function HybridPlanner() {
             )}
 
             {autoMachiningFrequency && selectedTool && (
-              <div className="bg-blue-950/40 border border-blue-800 rounded-lg px-3 py-2 text-xs text-blue-300">
-                With &Oslash;{selectedTool.diameterMm}mm tool (flute: {selectedTool.fluteLengthMm}mm): machines approx every{' '}
-                {selectedJob
-                  ? (() => {
-                      // Estimate interval based on 0.2mm default or known layer height
-                      const layerH = 0.2
-                      const interval = Math.floor((selectedTool.fluteLengthMm * 0.8) / layerH)
-                      return interval
-                    })()
-                  : '?'}{' '}
-                layers at 0.2mm/layer
+              <div className="bg-blue-950/40 border border-blue-800 rounded-lg px-3 py-2 text-xs text-blue-300 space-y-1">
+                <div className="font-medium">Dynamic frequency — interval varies by part geometry:</div>
+                <ul className="list-disc list-inside space-y-0.5 text-blue-400">
+                  <li>Flute reach: machine when pending height ≥ {(selectedTool.fluteLengthMm * 0.8).toFixed(1)} mm ({selectedTool.fluteLengthMm} mm × 80%)</li>
+                  <li>Geometry change: machine when bounding area shifts &gt;25% since last pass</li>
+                  <li>Access blocking: machine before next layer seals off current wall</li>
+                </ul>
+                <div className="text-blue-500">Cylinders → sparse intervals · Sphere tops → layer-by-layer</div>
               </div>
+            )}
+
+            {/* Spindle Speed */}
+            {selectedTool && (
+              <Field label="Spindle Speed (RPM)">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={100} max={60000} step={100}
+                    value={spindleRpmOverride ?? selectedTool.recommendedRpm}
+                    onChange={e => setSpindleRpmOverride(+e.target.value)}
+                    className="input w-28 text-center"
+                  />
+                  <span className="text-xs text-gray-500">RPM</span>
+                  {spindleRpmOverride !== null && spindleRpmOverride !== selectedTool.recommendedRpm && (
+                    <button
+                      onClick={() => setSpindleRpmOverride(null)}
+                      className="text-xs text-gray-500 hover:text-gray-300 underline"
+                    >
+                      reset to {selectedTool.recommendedRpm.toLocaleString()}
+                    </button>
+                  )}
+                </div>
+                <div className="text-xs text-gray-600 mt-1">
+                  Tool default: {selectedTool.recommendedRpm.toLocaleString()} RPM
+                </div>
+              </Field>
             )}
 
             {/* CNC options */}
@@ -343,24 +368,48 @@ export default function HybridPlanner() {
             <h3 className="font-medium text-white mb-4">Process Preview</h3>
             {selectedJob ? (
               <div className="space-y-1 text-sm font-mono text-gray-400 max-h-96 overflow-y-auto">
-                {selectedJob.totalPrintLayers && Array.from(
-                  { length: Math.ceil(selectedJob.totalPrintLayers / machineEveryN) },
-                  (_, i) => {
-                    const end   = (i + 1) * machineEveryN
-                    const start = i * machineEveryN + 1
-                    const isMachined = machinedLayers.includes(Math.min(end, selectedJob.totalPrintLayers!))
-                    return (
-                      <div key={i} className="space-y-0.5">
-                        <div className="text-blue-400">
-                          ▣ Print L{start}–L{Math.min(end, selectedJob.totalPrintLayers!)}
+                {machinedLayers.length > 0 ? (
+                  // After toolpath generation: show actual (potentially irregular) schedule
+                  (() => {
+                    const rows: React.ReactNode[] = []
+                    let printStart = 1
+                    for (let i = 0; i < machinedLayers.length; i++) {
+                      const ml = machinedLayers[i]
+                      rows.push(
+                        <div key={i} className="space-y-0.5">
+                          <div className="text-blue-400">▣ Print L{printStart}–L{ml}</div>
+                          <div className="pl-4 text-orange-400">⚙ CNC @ L{ml} ✓</div>
                         </div>
-                        <div className={`pl-4 ${isMachined ? 'text-orange-400' : 'text-gray-600'}`}>
-                          ⚙ CNC @ L{Math.min(end, selectedJob.totalPrintLayers!)}
-                          {isMachined && ' ✓'}
+                      )
+                      printStart = ml + 1
+                    }
+                    if (printStart <= (selectedJob.totalPrintLayers ?? 0)) {
+                      rows.push(
+                        <div key="final" className="text-blue-400">
+                          ▣ Print L{printStart}–L{selectedJob.totalPrintLayers}
                         </div>
-                      </div>
-                    )
-                  }
+                      )
+                    }
+                    return rows
+                  })()
+                ) : autoMachiningFrequency ? (
+                  <p className="text-gray-600 text-xs py-2">
+                    Auto frequency — actual schedule will appear here after generating toolpaths.
+                  </p>
+                ) : (
+                  selectedJob.totalPrintLayers && Array.from(
+                    { length: Math.ceil(selectedJob.totalPrintLayers / machineEveryN) },
+                    (_, i) => {
+                      const end   = (i + 1) * machineEveryN
+                      const start = i * machineEveryN + 1
+                      return (
+                        <div key={i} className="space-y-0.5">
+                          <div className="text-blue-400">▣ Print L{start}–L{Math.min(end, selectedJob.totalPrintLayers!)}</div>
+                          <div className="pl-4 text-gray-600">⚙ CNC @ L{Math.min(end, selectedJob.totalPrintLayers!)}</div>
+                        </div>
+                      )
+                    }
+                  )
                 )}
               </div>
             ) : (
