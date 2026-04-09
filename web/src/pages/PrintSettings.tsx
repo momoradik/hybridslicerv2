@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { printProfilesApi } from '../api/client'
 import type { PrintProfile } from '../types'
@@ -222,13 +223,17 @@ export default function PrintSettings() {
                 subtitle="For direct-pellet extruders. Uses a virtual filament diameter so Cura's E-math matches actual pellet volume output."
               >
                 <div className="space-y-3">
-                  <label className="flex items-center gap-3 cursor-pointer select-none">
-                    <div
-                      onClick={() => set('pelletModeEnabled', !draft.pelletModeEnabled)}
-                      className={`relative w-11 h-6 rounded-full transition-colors ${
-                        draft.pelletModeEnabled ? 'bg-amber-600' : 'bg-gray-700'
-                      }`}
-                    >
+                  {/* Toggle */}
+                  <label className="flex items-center gap-3 cursor-pointer select-none w-fit">
+                    <input
+                      type="checkbox"
+                      className="sr-only"
+                      checked={!!draft.pelletModeEnabled}
+                      onChange={e => set('pelletModeEnabled', e.target.checked)}
+                    />
+                    <div className={`relative w-11 h-6 rounded-full transition-colors ${
+                      draft.pelletModeEnabled ? 'bg-amber-600' : 'bg-gray-700'
+                    }`}>
                       <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
                         draft.pelletModeEnabled ? 'translate-x-5' : 'translate-x-0'
                       }`} />
@@ -238,34 +243,37 @@ export default function PrintSettings() {
                     </span>
                   </label>
 
+                  {/* Pellet sub-settings — only shown when ON */}
                   {draft.pelletModeEnabled && (
-                    <div className="pl-2 space-y-3 border-l-2 border-amber-800/60">
+                    <div className="pl-3 space-y-3 border-l-2 border-amber-800/60">
                       <div className="grid grid-cols-2 gap-4">
-                        <F
-                          label="Virtual Filament Diameter (mm)"
-                          hint="material_diameter override"
-                        >
+                        <F label="Virtual Filament Diameter (mm)" hint="material_diameter override">
                           <NumIn
                             value={draft.virtualFilamentDiameterMm ?? 1.0}
                             min={0.1} max={5} step={0.05}
                             onChange={v => set('virtualFilamentDiameterMm', v)}
                           />
-                          <AutoHint>
-                            1.0 mm is typical. Tune up/down to match actual extrusion volume.
-                          </AutoHint>
+                          <AutoHint>1.0 mm typical — tune with calibration tests</AutoHint>
                         </F>
                       </div>
-                      <div className="bg-amber-950/30 border border-amber-800/40 rounded-lg p-3 text-xs text-amber-300/80 space-y-1">
+
+                      <div className="bg-amber-950/30 border border-amber-800/40 rounded-lg p-3 text-xs text-amber-300/80 space-y-1.5">
                         <p className="font-medium text-amber-300">How it works</p>
                         <p>
-                          Cura computes <span className="font-mono">E = (b × h × L) / (π/4 × d²) × flow</span>.
-                          For a pellet extruder, set <span className="font-mono">d = virtual diameter</span> so that
-                          this formula maps to your extruder's actual volumetric output.
+                          Cura computes{' '}
+                          <span className="font-mono text-amber-200">E = (b × h × L) / (π/4 × d²) × flow</span>.
+                          Setting <span className="font-mono text-amber-200">d = virtual diameter</span> maps
+                          this formula to your pellet extruder's actual volumetric output.
                         </p>
                         <p>
-                          Start with 1.0 mm and run the <span className="font-medium text-amber-200">Pellet Calibration</span> tests
-                          to find the correct value for your setup.
+                          Start with 1.0 mm, then use the calibration page to find the right value.
                         </p>
+                        <Link
+                          to="/pellet-calibration"
+                          className="inline-block mt-1 px-3 py-1.5 bg-amber-800/50 hover:bg-amber-700/60 border border-amber-700/50 text-amber-200 rounded-lg text-xs font-medium transition"
+                        >
+                          Open Pellet Calibration →
+                        </Link>
                       </div>
                     </div>
                   )}
