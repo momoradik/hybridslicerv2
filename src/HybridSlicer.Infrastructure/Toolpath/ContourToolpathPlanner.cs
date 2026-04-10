@@ -150,24 +150,15 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
             }
 
             // ── Build local forbidden zone for this segment ────────────────────────────
-            // The local forbidden zone combines:
-            //   (a) The global support forbidden zone (all support paths buffered by clearance)
-            //   (b) For outer walls: the wall nozzle-path polygon itself — this represents the
-            //       solid printed material. Adding it explicitly prevents topology artifacts from
-            //       the Difference operation from producing toolpath segments that enter the part
-            //       interior. The CRC-offset outer ring should already be outside this polygon,
-            //       so subtracting geom is a safe no-op for correct geometry, and a safety net
-            //       for degenerate geometry.
-            //
-            // INVARIANT: the resulting toolpath must NEVER enter solid printed material.
-            // Fail CLOSED: if any set-operation fails, skip the region entirely rather than
-            // producing a potentially unsafe path.
+            // The forbidden zone is the union of all support paths buffered by (toolRadius + clearance).
+            // For outer walls we also add the printed wall polygon itself as a safety net:
+            // the tool must never enter solid material even if geometry is degenerate.
             Geometry? localForbidden = forbiddenZone;
             if (forbiddenZone is not null && request.IsOuterWall && geom is Polygon)
             {
                 try
                 {
-                    var geomNorm = geom.Buffer(0); // normalize before union
+                    var geomNorm = geom.Buffer(0);
                     localForbidden = forbiddenZone.Union(geomNorm);
                 }
                 catch (Exception ex)
@@ -175,54 +166,91 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
                     _logger.LogWarning(ex,
                         "Could not add part interior to forbidden zone at Z={Z}, using support-only",
                         request.ZHeightMm);
-                    // safe fallback: use support-only forbidden zone
                 }
             }
 
-            // Subtract the forbidden zone from the milling area
-            if (localForbidden is not null)
+            // ── Extract the milling contour(s) as 1-D line strings ────────────────────
+            // CRITICAL: We clip the contour LINE (1D), NOT the compensated polygon (2D).
+            //
+            // Clipping a polygon against the forbidden zone and then following its exterior
+            // ring is WRONG: when the forbidden zone bisects the polygon, NTS closes the
+            // resulting polygon by routing the exterior ring through the part interior —
+            // i.e., the tool would mill INTO the printed material on the other side.
+            //
+            // The correct approach: extract the exterior ring as a LineString, then
+            // LineString.Difference(forbiddenZone) → MultiLineString of accessible arcs.
+            // Each arc is emitted as a separate G-code block with a safe-height lift
+            // between arcs. The tool simply skips the blocked section instead of routing
+            // around it through solid material.
+            var contourLines = ExtractContourLines(compensated);
+            if (contourLines.Count == 0) continue;
+
+            var env2 = compensated.EnvelopeInternal;
+            var compBounds = new BoundingBox2D(env2.MinX + dx, env2.MinY + dy, env2.MaxX + dx, env2.MaxY + dy);
+
+            bool anyMachined = false;
+
+            foreach (var contourLine in contourLines)
             {
-                Geometry? clipped;
-                try
+                List<List<(double X, double Y)>> millingArcs;
+
+                if (localForbidden is not null)
                 {
-                    clipped = compensated.Difference(localForbidden);
+                    // Clip the 1-D contour ring against the forbidden zone.
+                    // Result: the arcs of the contour that lie outside the forbidden zone.
+                    // Each arc becomes its own G-code segment with a lift at each end.
+                    Geometry? clipped;
+                    try
+                    {
+                        clipped = contourLine.Difference(localForbidden);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Fail closed: if topology operation fails, skip this ring.
+                        _logger.LogWarning(ex,
+                            "Contour Difference failed at Z={Z} — ring skipped (fail-closed)",
+                            request.ZHeightMm);
+                        unmachinableRegions.Add(new UnmachinableRegion(request.ZHeightMm, "SupportBlocked", segBounds));
+                        continue;
+                    }
+
+                    if (clipped is null || clipped.IsEmpty)
+                    {
+                        _logger.LogDebug(
+                            "Contour ring at Z={Z} fully inside forbidden zone — SupportBlocked",
+                            request.ZHeightMm);
+                        unmachinableRegions.Add(new UnmachinableRegion(request.ZHeightMm, "SupportBlocked", segBounds));
+                        continue;
+                    }
+
+                    millingArcs = ExtractLineSegments(clipped);
+                    _logger.LogDebug(
+                        "Z={Z}: contour clipped into {N} arc(s) around support",
+                        request.ZHeightMm, millingArcs.Count);
                 }
-                catch (Exception ex)
+                else
                 {
-                    // CRITICAL: fail CLOSED — on any topology exception, skip this region.
-                    // Do NOT fall through with the unclipped path: that could produce toolpath
-                    // moves that traverse support regions or enter solid printed geometry.
-                    _logger.LogWarning(ex,
-                        "Toolpath Difference failed at Z={Z} — region skipped (fail-closed for safety)",
-                        request.ZHeightMm);
-                    unmachinableRegions.Add(new UnmachinableRegion(request.ZHeightMm, "SupportBlocked", segBounds));
-                    continue;
+                    // No forbidden zone — machine the full ring as one closed contour.
+                    millingArcs = [contourLine.Coordinates.Select(c => (c.X, c.Y)).ToList()];
                 }
 
-                if (clipped is null || clipped.IsEmpty)
+                foreach (var arc in millingArcs)
                 {
-                    _logger.LogDebug("Segment at Z={Z} fully inside forbidden zone — SupportBlocked", request.ZHeightMm);
-                    unmachinableRegions.Add(new UnmachinableRegion(request.ZHeightMm, "SupportBlocked", segBounds));
-                    continue;
+                    if (arc.Count < 2) continue;
+                    anyMachined = true;
+
+                    var gcode = BuildGCode(arc, zCut, zSafe,
+                        request.FeedRateMmPerMin, request.SpindleRpm,
+                        dx, dy, request.ClimbMilling);
+                    gcodeBuilder.AppendLine(gcode);
+                    allBounds.Add(compBounds);
                 }
-                compensated = clipped;
             }
 
-            // Extract exterior ring(s) from the valid milling geometry
-            var rings = ExtractRings(compensated);
-            foreach (var ring in rings)
+            if (!anyMachined)
             {
-                if (ring.Count < 3) continue;
-                var gcode = BuildGCode(
-                    ring, zCut, zSafe,
-                    request.FeedRateMmPerMin, request.SpindleRpm,
-                    dx, dy, request.ClimbMilling);
-                gcodeBuilder.AppendLine(gcode);
-
-                var env = compensated.EnvelopeInternal;
-                allBounds.Add(new BoundingBox2D(
-                    env.MinX + dx, env.MinY + dy,
-                    env.MaxX + dx, env.MaxY + dy));
+                // All contour rings were completely blocked — report region as unmachinable.
+                unmachinableRegions.Add(new UnmachinableRegion(request.ZHeightMm, "SupportBlocked", segBounds));
             }
         }
 
@@ -316,23 +344,47 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
         }
     }
 
-    /// <summary>Extracts all exterior rings from a buffered geometry.</summary>
-    private static List<List<(double X, double Y)>> ExtractRings(Geometry geom)
+    /// <summary>
+    /// Extracts the exterior ring of every polygon in a geometry as a LinearRing.
+    /// These are the 1-D milling contours — one closed loop per polygon face.
+    /// </summary>
+    private static List<LinearRing> ExtractContourLines(Geometry geom)
+    {
+        var result = new List<LinearRing>();
+        void AddPoly(Polygon poly)
+        {
+            if (poly.ExteriorRing is LinearRing lr && lr.NumPoints >= 4)
+                result.Add(lr);
+        }
+        if (geom is Polygon p)            { AddPoly(p); }
+        else if (geom is MultiPolygon mp) { foreach (var g in mp.Geometries.OfType<Polygon>()) AddPoly(g); }
+        else if (geom is GeometryCollection gc) { foreach (var g in gc.Geometries.OfType<Polygon>()) AddPoly(g); }
+        return result;
+    }
+
+    /// <summary>
+    /// Extracts all LineString components from a geometry (result of LineString.Difference).
+    /// Each component represents an arc of the milling contour that is outside the forbidden zone.
+    /// </summary>
+    private static List<List<(double X, double Y)>> ExtractLineSegments(Geometry geom)
     {
         var result = new List<List<(double X, double Y)>>();
-
-        void AddRing(Polygon poly)
+        void AddLine(LineString ls)
         {
-            var ring = poly.ExteriorRing.Coordinates
-                .Select(c => (c.X, c.Y))
-                .ToList();
-            if (ring.Count >= 3) result.Add(ring);
+            var pts = ls.Coordinates.Select(c => (c.X, c.Y)).ToList();
+            if (pts.Count >= 2) result.Add(pts);
         }
-
-        if (geom is Polygon p)       { AddRing(p); }
-        else if (geom is MultiPolygon mp) { foreach (var g in mp.Geometries.OfType<Polygon>()) AddRing(g); }
-        else if (geom is GeometryCollection gc) { foreach (var g in gc.Geometries.OfType<Polygon>()) AddRing(g); }
-
+        if      (geom is LinearRing lr)      { AddLine(lr); }
+        else if (geom is LineString ls)      { AddLine(ls); }
+        else if (geom is MultiLineString mls){ foreach (var g in mls.Geometries.OfType<LineString>()) AddLine(g); }
+        else if (geom is GeometryCollection gc)
+        {
+            foreach (var g in gc.Geometries)
+            {
+                if      (g is MultiLineString ml) foreach (var g2 in ml.Geometries.OfType<LineString>()) AddLine(g2);
+                else if (g is LineString l)       AddLine(l);
+            }
+        }
         return result;
     }
 

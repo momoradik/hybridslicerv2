@@ -26,7 +26,6 @@ function gcodeHeader(profile: PrintProfile): string {
   const nozzle = effectiveNozzle(profile)
   const dF     = effectiveDiam(profile)
   const h      = profile.layerHeightMm
-  // Prime line: 60 mm along X=10–70, Y=5
   const primeE = calcE(nozzle, h, 60, dF, profile.materialFlowPct)
 
   return [
@@ -74,7 +73,6 @@ function gcodeFooter(): string {
   ].join('\n')
 }
 
-/** Flow line test: parallel 100 mm lines at different flow % values */
 function generateLineTest(profile: PrintProfile, flowSteps: number[]): string {
   const nozzle  = effectiveNozzle(profile)
   const dF      = effectiveDiam(profile)
@@ -82,8 +80,8 @@ function generateLineTest(profile: PrintProfile, flowSteps: number[]): string {
   const speed   = profile.printSpeedMmS
   const startX  = 10
   const lineLen = 100
-  const yGap    = 8         // mm between lines
-  const yStart0 = 20        // first line Y position
+  const yGap    = 8
+  const yStart0 = 20
   const z       = h
 
   const out: string[] = [
@@ -99,7 +97,6 @@ function generateLineTest(profile: PrintProfile, flowSteps: number[]): string {
   flowSteps.forEach((flowPct, i) => {
     const y = yStart0 + i * yGap
     const e = calcE(nozzle, h, lineLen, dF, flowPct)
-    // Safe retract: never go below 0
     const eRetract = Math.max(0, e - RETRACT_MM)
 
     out.push('')
@@ -115,7 +112,6 @@ function generateLineTest(profile: PrintProfile, flowSteps: number[]): string {
   return out.join('\n')
 }
 
-/** Flow tower: single-wall 20×20 mm square, 5 mm sections at different flow % */
 function generateFlowTower(profile: PrintProfile, flowSteps: number[]): string {
   const nozzle        = effectiveNozzle(profile)
   const dF            = effectiveDiam(profile)
@@ -168,7 +164,6 @@ function generateFlowTower(profile: PrintProfile, flowSteps: number[]): string {
   return out.join('\n')
 }
 
-/** 20×20×10 mm single-wall cube at profile defaults */
 function generateCubeTest(profile: PrintProfile): string {
   const nozzle      = effectiveNozzle(profile)
   const dF          = effectiveDiam(profile)
@@ -232,6 +227,34 @@ function flowSteps({ min, max, step }: FlowConfig): number[] {
   return result
 }
 
+// Result advisor: given measured width vs target, suggest action
+function getLineAdvice(measured: number, target: number, currentVDiam: number): {
+  verdict: 'over' | 'under' | 'good'
+  msg: string
+  suggestedVDiam?: number
+} {
+  const ratio = measured / target
+  if (ratio >= 0.95 && ratio <= 1.05) {
+    return { verdict: 'good', msg: 'Good — this flow % is your target. Set it as Base Flow in your profile.' }
+  }
+  if (ratio > 1.05) {
+    // Over-extrusion: increase virtual diameter to reduce E output
+    const suggestedVDiam = parseFloat((currentVDiam * Math.sqrt(ratio)).toFixed(2))
+    return {
+      verdict: 'over',
+      msg: `All lines too wide (${ratio.toFixed(2)}× target). Increase Virtual Diameter to reduce volumetric output.`,
+      suggestedVDiam,
+    }
+  }
+  // Under-extrusion: decrease virtual diameter to increase E output
+  const suggestedVDiam = parseFloat((currentVDiam * Math.sqrt(ratio)).toFixed(2))
+  return {
+    verdict: 'under',
+    msg: `All lines too narrow (${ratio.toFixed(2)}× target). Decrease Virtual Diameter to increase volumetric output.`,
+    suggestedVDiam,
+  }
+}
+
 export default function PelletCalibration() {
   const { data: profiles = [], isLoading } = useQuery({
     queryKey: ['printProfiles'],
@@ -240,13 +263,28 @@ export default function PelletCalibration() {
 
   const pelletProfiles = profiles.filter(p => p.pelletModeEnabled)
 
-  const [selectedId, setSelectedId] = useState<string>('')
-  const [lineFlow,   setLineFlow]   = useState<FlowConfig>({ min: 80, max: 120, step: 5 })
-  const [towerFlow,  setTowerFlow]  = useState<FlowConfig>({ min: 80, max: 120, step: 10 })
+  const [selectedId,    setSelectedId]    = useState<string>('')
+  const [lineFlow,      setLineFlow]      = useState<FlowConfig>({ min: 80, max: 120, step: 5 })
+  const [towerFlow,     setTowerFlow]     = useState<FlowConfig>({ min: 80, max: 120, step: 10 })
+  const [tutorialOpen,  setTutorialOpen]  = useState(true)
+  const [activeSection, setActiveSection] = useState<'concepts' | 'formula' | 'tips' | null>('concepts')
 
-  const profile     = useMemo(() => profiles.find(p => p.id === selectedId) ?? null, [profiles, selectedId])
-  const lineSteps   = useMemo(() => flowSteps(lineFlow),  [lineFlow])
-  const towerSteps  = useMemo(() => flowSteps(towerFlow), [towerFlow])
+  // Result advisor state
+  const [measuredWidth, setMeasuredWidth] = useState('')
+
+  const profile    = useMemo(() => profiles.find(p => p.id === selectedId) ?? null, [profiles, selectedId])
+  const lineSteps  = useMemo(() => flowSteps(lineFlow),  [lineFlow])
+  const towerSteps = useMemo(() => flowSteps(towerFlow), [towerFlow])
+
+  const nozzle = profile ? effectiveNozzle(profile) : 0.4
+  const vDiam  = profile ? effectiveDiam(profile) : 1.0
+
+  const advice = useMemo(() => {
+    if (!profile || !measuredWidth) return null
+    const w = parseFloat(measuredWidth)
+    if (isNaN(w) || w <= 0) return null
+    return getLineAdvice(w, nozzle, vDiam)
+  }, [measuredWidth, nozzle, vDiam, profile])
 
   function generate(type: 'line' | 'tower' | 'cube') {
     if (!profile) return
@@ -268,29 +306,214 @@ export default function PelletCalibration() {
 
   return (
     <div className="space-y-6 max-w-3xl">
-      {/* Header */}
+
+      {/* ── Header ── */}
       <div>
         <h2 className="text-2xl font-semibold text-white">Pellet Calibration</h2>
         <p className="text-sm text-gray-500 mt-1">
-          Generate calibration G-code to dial in your pellet extruder's virtual filament diameter and flow rate.
+          Step-by-step guide to dial in your pellet extruder's virtual filament diameter and flow rate.
         </p>
       </div>
 
-      {/* Profile selector */}
+      {/* ── Tutorial Panel ── */}
+      <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
+        <button
+          onClick={() => setTutorialOpen(o => !o)}
+          className="w-full flex items-center justify-between px-5 py-3.5 text-left hover:bg-gray-800/60 transition"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="text-base font-medium text-white">How Pellet Calibration Works</span>
+            <span className="text-[10px] bg-blue-900/60 text-blue-300 border border-blue-700/50 rounded px-1.5 py-0.5 font-medium tracking-wide">TUTORIAL</span>
+          </div>
+          <span className="text-gray-500 text-lg select-none">{tutorialOpen ? '▲' : '▼'}</span>
+        </button>
+
+        {tutorialOpen && (
+          <div className="border-t border-gray-800">
+            {/* Sub-section tabs */}
+            <div className="flex border-b border-gray-800">
+              {(['concepts', 'formula', 'tips'] as const).map(sec => (
+                <button
+                  key={sec}
+                  onClick={() => setActiveSection(s => s === sec ? null : sec)}
+                  className={`px-4 py-2 text-xs font-medium transition border-b-2 -mb-px ${
+                    activeSection === sec
+                      ? 'border-blue-500 text-blue-300'
+                      : 'border-transparent text-gray-500 hover:text-gray-300'
+                  }`}
+                >
+                  {sec === 'concepts' ? 'Core Concepts' : sec === 'formula' ? 'The Formula' : 'Tips & Troubleshooting'}
+                </button>
+              ))}
+            </div>
+
+            {activeSection === 'concepts' && (
+              <div className="p-5 space-y-4 text-sm text-gray-400">
+                <div className="space-y-2">
+                  <h4 className="text-white font-medium">What is Virtual Filament Diameter?</h4>
+                  <p>
+                    Pellet extruders don't use standard 1.75 mm filament. To control extrusion volume,
+                    HybridSlicer uses a <span className="text-amber-300 font-medium">virtual filament diameter</span> — a fake
+                    diameter value that tells the firmware how much material to push per mm of E-axis movement.
+                  </p>
+                  <p>
+                    Think of it as a <span className="text-white">calibration knob</span> for your pellet extruder's volumetric output.
+                    A smaller virtual diameter → more E steps per mm → more material extruded. A larger virtual diameter → fewer steps → less material.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <h4 className="text-white font-medium">The Calibration Process (4 Steps)</h4>
+                  <ol className="space-y-2 list-none">
+                    {[
+                      { num: '1', color: 'amber', title: 'Flow Line Test', desc: 'Print lines at different flow percentages. Measure each line\'s width with calipers. Find which flow % produces lines closest to your nozzle diameter.' },
+                      { num: '2', color: 'orange', title: 'Adjust Virtual Diameter', desc: 'If ALL lines are systematically too wide or too narrow, adjust the virtual diameter in Print Settings and re-run the line test. Use the Result Advisor below to get a suggested value.' },
+                      { num: '3', color: 'blue', title: 'Flow Tower', desc: 'Print a tower with different flow sections to confirm consistency over height. Look for even walls with no banding.' },
+                      { num: '4', color: 'green', title: 'Cube Validation', desc: 'Final check: print a 20×20×10 mm cube at your dialed-in settings. Measure wall thickness — it should match your nozzle diameter.' },
+                    ].map(step => (
+                      <li key={step.num} className="flex gap-3">
+                        <span className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold mt-0.5 ${
+                          step.color === 'amber' ? 'bg-amber-900/50 text-amber-300 border border-amber-700'
+                          : step.color === 'orange' ? 'bg-orange-900/50 text-orange-300 border border-orange-700'
+                          : step.color === 'blue' ? 'bg-blue-900/50 text-blue-300 border border-blue-700'
+                          : 'bg-green-900/50 text-green-300 border border-green-700'
+                        }`}>{step.num}</span>
+                        <div>
+                          <span className="text-white font-medium">{step.title} — </span>
+                          <span>{step.desc}</span>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+
+                <div className="bg-blue-950/30 border border-blue-800/40 rounded-lg p-3 text-blue-300/80 text-xs">
+                  <span className="font-medium text-blue-300">Tip: </span>
+                  Always start with the Flow Line Test. You typically only need the Flow Tower and Cube after you've found a stable flow % from the line test.
+                </div>
+              </div>
+            )}
+
+            {activeSection === 'formula' && (
+              <div className="p-5 space-y-4 text-sm text-gray-400">
+                <h4 className="text-white font-medium">Extrusion Length Formula</h4>
+                <p>Every E move in the calibration G-code is calculated as:</p>
+
+                <div className="bg-gray-950 border border-gray-700 rounded-lg p-4 font-mono text-sm text-center space-y-1">
+                  <div className="text-gray-300">
+                    E = <span className="text-amber-300">(nozzle × layerH × distance)</span>
+                    {' / '}
+                    <span className="text-blue-300">(π/4 × virtualDiam²)</span>
+                    {' × '}
+                    <span className="text-green-300">flow%</span>
+                  </div>
+                  {profile && (
+                    <div className="text-xs text-gray-600 pt-2 border-t border-gray-800 mt-2">
+                      Example for 100 mm line at {profile.materialFlowPct}%:{' '}
+                      <span className="text-gray-400">
+                        E = ({nozzle.toFixed(2)} × {profile.layerHeightMm} × 100) / (π/4 × {vDiam.toFixed(2)}²) × {profile.materialFlowPct / 100}{' '}
+                        = <span className="text-white">{calcE(nozzle, profile.layerHeightMm, 100, vDiam, profile.materialFlowPct).toFixed(4)} mm</span>
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <h4 className="text-white font-medium">What each variable does</h4>
+                  <table className="w-full text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-gray-800">
+                        <th className="text-left py-1.5 pr-4 text-gray-500 font-medium">Variable</th>
+                        <th className="text-left py-1.5 pr-4 text-gray-500 font-medium">Source</th>
+                        <th className="text-left py-1.5 text-gray-500 font-medium">Effect when increased</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-800/50">
+                      {[
+                        ['nozzle', 'Profile → Nozzle Diameter', 'More material per mm'],
+                        ['layerH', 'Profile → Layer Height', 'More material per mm'],
+                        ['virtualDiam', 'Profile → Virtual Filament Diameter', 'Less material per mm (inverse square)'],
+                        ['flow%', 'Base Flow + calibration sweep', 'Proportionally more material'],
+                      ].map(([v, src, eff]) => (
+                        <tr key={v}>
+                          <td className="py-1.5 pr-4 font-mono text-amber-300">{v}</td>
+                          <td className="py-1.5 pr-4 text-gray-400">{src}</td>
+                          <td className="py-1.5 text-gray-400">{eff}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {activeSection === 'tips' && (
+              <div className="p-5 space-y-4 text-sm text-gray-400">
+                <div className="space-y-3">
+                  {[
+                    {
+                      problem: 'All lines are too wide',
+                      cause: 'Virtual diameter too small → too many E steps',
+                      fix: 'Increase virtual diameter. Use the Result Advisor in Step 1 to get a calculated suggestion.',
+                    },
+                    {
+                      problem: 'All lines are too narrow / gappy',
+                      cause: 'Virtual diameter too large → too few E steps',
+                      fix: 'Decrease virtual diameter. Use the Result Advisor in Step 1.',
+                    },
+                    {
+                      problem: 'Lines vary a lot in width',
+                      cause: 'Feed inconsistency (pellet bridging, moisture, temperature)',
+                      fix: 'Check pellet feed path, dry your pellets, and check extruder temperature is stable before measuring.',
+                    },
+                    {
+                      problem: 'Tower sections look good but overall height is wrong',
+                      cause: 'Layer height slightly off, or Z-steps not calibrated',
+                      fix: 'Verify Z-axis steps per mm in firmware. Layer height mismatch doesn\'t affect flow calibration.',
+                    },
+                    {
+                      problem: 'Cube walls are wavy or uneven',
+                      cause: 'Print speed too high for pellet melt rate',
+                      fix: 'Reduce print speed in your profile, or increase temperature slightly.',
+                    },
+                  ].map(item => (
+                    <div key={item.problem} className="border border-gray-800 rounded-lg p-3 space-y-1">
+                      <p className="text-white font-medium text-xs">{item.problem}</p>
+                      <p className="text-[11px]"><span className="text-gray-500">Cause: </span>{item.cause}</p>
+                      <p className="text-[11px]"><span className="text-green-400">Fix: </span>{item.fix}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="bg-amber-950/30 border border-amber-800/40 rounded-lg p-3 text-amber-300/80 text-xs">
+                  <span className="font-medium text-amber-300">Measurement tip: </span>
+                  Use digital calipers and measure each line at 3 points along its length. Average the readings. Lines should be measured after the print has cooled completely.
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Profile Selector ── */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-3">
-        <h3 className="font-medium text-white">Select Pellet Profile</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="font-medium text-white">Select Pellet Profile</h3>
+          <Link to="/print-settings" className="text-xs text-gray-500 hover:text-gray-300 transition">
+            Manage profiles →
+          </Link>
+        </div>
 
         {isLoading ? (
           <p className="text-sm text-gray-500">Loading profiles…</p>
         ) : pelletProfiles.length === 0 ? (
           <div className="text-sm text-amber-400 bg-amber-950/30 border border-amber-800/40 rounded-lg p-3 space-y-1">
-            <p>No profiles with Pellet Mode enabled.</p>
-            <p>
+            <p className="font-medium">No profiles with Pellet Mode enabled.</p>
+            <p className="text-amber-500">
               Go to{' '}
               <Link to="/print-settings" className="underline text-amber-300 hover:text-amber-100">
                 Print Settings
               </Link>{' '}
-              and enable Pellet Mode on a profile first.
+              and enable Pellet Mode on a profile first, then set a Virtual Filament Diameter.
             </p>
           </div>
         ) : (
@@ -298,7 +521,7 @@ export default function PelletCalibration() {
             {pelletProfiles.map(p => (
               <button
                 key={p.id}
-                onClick={() => setSelectedId(p.id)}
+                onClick={() => { setSelectedId(p.id); setMeasuredWidth('') }}
                 className={`text-left p-3 rounded-lg border text-sm transition ${
                   selectedId === p.id
                     ? 'bg-amber-900/30 border-amber-700 text-amber-200'
@@ -306,12 +529,12 @@ export default function PelletCalibration() {
                 }`}
               >
                 <p className="font-medium">{p.name}</p>
-                <p className="text-[11px] text-gray-500 mt-0.5 space-x-2">
-                  <span>vDiam: {p.virtualFilamentDiameterMm} mm</span>
-                  <span>·</span>
-                  <span>nozzle: {p.nozzleDiameterMm > 0 ? `${p.nozzleDiameterMm} mm` : 'machine'}</span>
-                  <span>·</span>
-                  <span>LH: {p.layerHeightMm} mm</span>
+                <p className="text-[11px] text-gray-500 mt-0.5">
+                  vDiam: {p.virtualFilamentDiameterMm} mm
+                  {' · '}
+                  nozzle: {p.nozzleDiameterMm > 0 ? `${p.nozzleDiameterMm} mm` : 'from machine'}
+                  {' · '}
+                  LH: {p.layerHeightMm} mm
                 </p>
               </button>
             ))}
@@ -319,135 +542,271 @@ export default function PelletCalibration() {
         )}
       </div>
 
-      {/* No profile selected hint */}
       {pelletProfiles.length > 0 && !profile && (
-        <p className="text-sm text-gray-600 text-center py-4">
-          Select a profile above to configure and download calibration prints.
+        <p className="text-sm text-gray-600 text-center py-2">
+          Select a profile above to begin calibration.
         </p>
       )}
 
       {profile && (
         <>
-          {/* ── Tuning Workflow Guide ──────────────────────────────────────── */}
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-4">
-            <h3 className="font-medium text-white">Tuning Workflow</h3>
-
-            <ol className="space-y-2.5 text-sm text-gray-400 list-decimal list-inside">
-              <li>
-                <span className="text-gray-200 font-medium">Flow Line Test</span> — print lines at multiple
-                flow %, measure wall width with calipers. The line closest to your nozzle diameter (
-                {effectiveNozzle(profile)} mm) is your best flow %.
-              </li>
-              <li>
-                <span className="text-gray-200 font-medium">Adjust Virtual Diameter</span> — if all lines are
-                consistently too wide, increase the virtual diameter; too narrow → decrease it. Update the
-                profile in Print Settings, then re-run the line test.
-              </li>
-              <li>
-                <span className="text-gray-200 font-medium">Flow Tower</span> — confirms consistency over height.
-                Even wall width with no banding = good. Adjust flow % if one section looks better.
-              </li>
-              <li>
-                <span className="text-gray-200 font-medium">Cube Validation</span> — final check at default
-                settings. Wall thickness ≈ nozzle diameter, no gaps or over-extrusion.
-              </li>
-            </ol>
-
-            {/* Profile summary */}
-            <div className="bg-blue-950/30 border border-blue-800/40 rounded-lg p-3 text-xs text-blue-300/80">
-              <p className="font-medium text-blue-300 mb-2">Active profile — {profile.name}</p>
-              <div className="grid grid-cols-2 gap-x-8 gap-y-1 font-mono text-[11px]">
-                <Row label="Virtual diam" value={`${profile.virtualFilamentDiameterMm} mm`} />
-                <Row label="Nozzle"       value={`${effectiveNozzle(profile)} mm`} />
-                <Row label="Layer height" value={`${profile.layerHeightMm} mm`} />
-                <Row label="Base flow"    value={`${profile.materialFlowPct} %`} />
-                <Row label="Print speed"  value={`${profile.printSpeedMmS} mm/s`} />
-                <Row label="Temperature"  value={`${profile.printTemperatureDegC} °C`} />
-              </div>
+          {/* ── Active Profile Summary ── */}
+          <div className="bg-blue-950/20 border border-blue-800/40 rounded-xl p-4">
+            <p className="text-xs font-medium text-blue-400 mb-2.5">Active Profile — {profile.name}</p>
+            <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-xs font-mono">
+              <SummaryRow label="Virtual diam"  value={`${profile.virtualFilamentDiameterMm} mm`} highlight />
+              <SummaryRow label="Nozzle"        value={`${effectiveNozzle(profile)} mm`} highlight />
+              <SummaryRow label="Layer height"  value={`${profile.layerHeightMm} mm`} />
+              <SummaryRow label="Base flow"     value={`${profile.materialFlowPct} %`} />
+              <SummaryRow label="Print speed"   value={`${profile.printSpeedMmS} mm/s`} />
+              <SummaryRow label="Temperature"   value={`${profile.printTemperatureDegC} °C`} />
             </div>
+            <Link to="/print-settings" className="inline-block mt-2.5 text-[11px] text-blue-400 hover:text-blue-200 transition">
+              Edit this profile →
+            </Link>
           </div>
 
-          {/* ── Test 1: Flow Lines ─────────────────────────────────────────── */}
-          <TestCard title="1 — Flow Line Test" color="amber"
-            description="Parallel 100 mm lines, one per flow %. Measure each width with calipers after printing."
-          >
-            <div className="grid grid-cols-3 gap-3">
-              <NumField label="Min flow (%)" value={lineFlow.min}  min={40}  max={200} onChange={v => setLineFlow(f => ({ ...f, min: v }))} />
-              <NumField label="Max flow (%)" value={lineFlow.max}  min={40}  max={200} onChange={v => setLineFlow(f => ({ ...f, max: v }))} />
-              <NumField label="Step (%)"     value={lineFlow.step} min={1}   max={20}  onChange={v => setLineFlow(f => ({ ...f, step: v }))} />
-            </div>
-            <div className="flex items-center justify-between mt-1">
-              <p className="text-xs text-gray-500">
-                {lineSteps.length} lines: {lineSteps.join(', ')} %
-              </p>
-              <p className="text-xs text-gray-600">
-                starts at Y=20, spaced 8 mm
-              </p>
-            </div>
-            <button onClick={() => generate('line')}
-              className="mt-2 px-4 py-2 bg-amber-700 hover:bg-amber-600 text-white rounded-lg text-sm transition w-full">
-              Download Flow Line Test G-code
-            </button>
-          </TestCard>
+          {/* ── Step 1: Flow Line Test ── */}
+          <StepCard step={1} title="Flow Line Test" color="amber">
+            <div className="space-y-4">
+              <div className="text-sm text-gray-400 space-y-1.5">
+                <p>
+                  Prints <span className="text-white">{lineSteps.length} parallel 100 mm lines</span>, each at a different flow %.
+                  Lines start at Y=20 and are spaced 8 mm apart. A prime line is printed first.
+                </p>
+                <div className="bg-amber-950/20 border border-amber-800/30 rounded-lg p-3 text-xs space-y-1">
+                  <p className="text-amber-300 font-medium">What to measure:</p>
+                  <p>After printing, use digital calipers to measure the width of each line at the midpoint.
+                    Write down the flow % next to each measurement.
+                    The line closest to <span className="text-white font-mono">{effectiveNozzle(profile).toFixed(2)} mm</span> (your nozzle diameter) is your target flow %.
+                  </p>
+                </div>
+              </div>
 
-          {/* ── Test 2: Flow Tower ────────────────────────────────────────── */}
-          <TestCard title="2 — Flow Tower" color="blue"
-            description="Single-wall 20×20 mm square tower. Each 5 mm section uses a different flow %. Look for the section with the most even wall width."
-          >
-            <div className="grid grid-cols-3 gap-3">
-              <NumField label="Min flow (%)" value={towerFlow.min}  min={40}  max={200} onChange={v => setTowerFlow(f => ({ ...f, min: v }))} />
-              <NumField label="Max flow (%)" value={towerFlow.max}  min={40}  max={200} onChange={v => setTowerFlow(f => ({ ...f, max: v }))} />
-              <NumField label="Step (%)"     value={towerFlow.step} min={1}   max={30}  onChange={v => setTowerFlow(f => ({ ...f, step: v }))} />
-            </div>
-            <div className="flex items-center justify-between mt-1">
-              <p className="text-xs text-gray-500">
-                {towerSteps.length} sections: {towerSteps.join(', ')} %
-              </p>
-              <p className="text-xs text-gray-600">
-                ≈{(towerSteps.length * 5).toFixed(0)} mm tall
-              </p>
-            </div>
-            <button onClick={() => generate('tower')}
-              className="mt-2 px-4 py-2 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-sm transition w-full">
-              Download Flow Tower G-code
-            </button>
-          </TestCard>
+              <div>
+                <p className="text-xs text-gray-500 mb-2">Flow range to sweep</p>
+                <div className="grid grid-cols-3 gap-3">
+                  <NumField label="Min flow (%)" value={lineFlow.min}  min={40}  max={200} onChange={v => setLineFlow(f => ({ ...f, min: v }))} />
+                  <NumField label="Max flow (%)" value={lineFlow.max}  min={40}  max={200} onChange={v => setLineFlow(f => ({ ...f, max: v }))} />
+                  <NumField label="Step (%)"     value={lineFlow.step} min={1}   max={20}  onChange={v => setLineFlow(f => ({ ...f, step: v }))} />
+                </div>
+                <div className="flex items-center justify-between mt-2">
+                  <p className="text-xs text-gray-600">
+                    {lineSteps.length} lines at: {lineSteps.join(', ')} %
+                  </p>
+                  <p className="text-xs text-gray-700">
+                    bed area: ~{((lineSteps.length - 1) * 8 + 20 + 100).toFixed(0)} × 130 mm
+                  </p>
+                </div>
+              </div>
 
-          {/* ── Test 3: Cube ──────────────────────────────────────────────── */}
-          <TestCard title="3 — Cube Validation" color="green"
-            description="20×20×10 mm single-wall cube at your profile defaults. Measure wall thickness — should match nozzle diameter."
-          >
-            <div className="grid grid-cols-3 gap-x-6 gap-y-1 text-xs font-mono text-gray-500 mt-1">
-              <Row label="Size"   value="20 × 20 × 10 mm" />
-              <Row label="Layers" value={`${Math.round(10 / profile.layerHeightMm)} @ ${profile.layerHeightMm} mm`} />
-              <Row label="Flow"   value={`${profile.materialFlowPct} %`} />
+              <button onClick={() => generate('line')}
+                className="px-4 py-2.5 bg-amber-700 hover:bg-amber-600 text-white rounded-lg text-sm font-medium transition w-full">
+                Download Flow Line Test G-code
+              </button>
+
+              {/* Result Advisor */}
+              <div className="border-t border-gray-800 pt-4 space-y-3">
+                <p className="text-xs font-medium text-gray-400">Result Advisor</p>
+                <p className="text-xs text-gray-600">
+                  After printing, enter the width of the best-looking line (the one closest to {effectiveNozzle(profile).toFixed(2)} mm).
+                  If all lines are systematically too wide or narrow, the advisor will suggest a new virtual diameter.
+                </p>
+                <div className="flex gap-3 items-end">
+                  <div className="flex-1">
+                    <label className="text-xs text-gray-500 block mb-1">Measured line width (mm)</label>
+                    <input
+                      type="number" min={0.1} max={5} step={0.01}
+                      value={measuredWidth}
+                      onChange={e => setMeasuredWidth(e.target.value)}
+                      placeholder={`target: ${effectiveNozzle(profile).toFixed(2)}`}
+                      className="input w-full text-sm"
+                    />
+                  </div>
+                  <div className="text-xs text-gray-600 pb-2">
+                    target: <span className="font-mono text-gray-400">{effectiveNozzle(profile).toFixed(2)} mm</span>
+                  </div>
+                </div>
+
+                {advice && (
+                  <div className={`rounded-lg p-3 text-xs space-y-2 ${
+                    advice.verdict === 'good'
+                      ? 'bg-green-950/30 border border-green-800/40 text-green-300'
+                      : advice.verdict === 'over'
+                      ? 'bg-red-950/30 border border-red-800/40 text-red-300'
+                      : 'bg-orange-950/30 border border-orange-800/40 text-orange-300'
+                  }`}>
+                    <p className="font-medium">
+                      {advice.verdict === 'good' ? 'On target' : advice.verdict === 'over' ? 'Over-extruding' : 'Under-extruding'}
+                    </p>
+                    <p>{advice.msg}</p>
+                    {advice.suggestedVDiam != null && (
+                      <p>
+                        Suggested virtual diameter:{' '}
+                        <span className="font-mono text-white font-bold">{advice.suggestedVDiam} mm</span>
+                        {' '}(current: {profile.virtualFilamentDiameterMm} mm).{' '}
+                        <Link to="/print-settings" className="underline hover:opacity-80">
+                          Update in Print Settings →
+                        </Link>
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-            <button onClick={() => generate('cube')}
-              className="mt-3 px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition w-full">
-              Download Cube Validation G-code
-            </button>
-          </TestCard>
+          </StepCard>
+
+          {/* ── Step 2: Adjust Virtual Diameter ── */}
+          <StepCard step={2} title="Adjust Virtual Diameter (if needed)" color="orange">
+            <div className="text-sm text-gray-400 space-y-3">
+              <p>
+                If the Result Advisor above suggested a new virtual diameter, update it in your profile before continuing.
+                Then re-run the Flow Line Test until lines are consistently close to {effectiveNozzle(profile).toFixed(2)} mm.
+              </p>
+
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div className="bg-red-950/20 border border-red-800/30 rounded-lg p-3 space-y-1">
+                  <p className="text-red-300 font-medium">Lines too wide?</p>
+                  <p className="text-gray-500">Virtual diameter is too small. Increase it — this reduces E output per move.</p>
+                </div>
+                <div className="bg-orange-950/20 border border-orange-800/30 rounded-lg p-3 space-y-1">
+                  <p className="text-orange-300 font-medium">Lines too narrow?</p>
+                  <p className="text-gray-500">Virtual diameter is too large. Decrease it — this increases E output per move.</p>
+                </div>
+              </div>
+
+              <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-3 flex items-center justify-between">
+                <div className="text-xs">
+                  <p className="text-gray-500">Current virtual diameter</p>
+                  <p className="text-white font-mono text-base mt-0.5">{profile.virtualFilamentDiameterMm} mm</p>
+                </div>
+                <Link to="/print-settings"
+                  className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg text-xs transition">
+                  Edit in Print Settings →
+                </Link>
+              </div>
+
+              <p className="text-xs text-gray-600">
+                After updating, come back, select the updated profile, and re-run the Flow Line Test.
+                Repeat until the best line width is within ~0.05 mm of your nozzle diameter.
+              </p>
+            </div>
+          </StepCard>
+
+          {/* ── Step 3: Flow Tower ── */}
+          <StepCard step={3} title="Flow Tower" color="blue">
+            <div className="space-y-4">
+              <div className="text-sm text-gray-400 space-y-1.5">
+                <p>
+                  Prints a <span className="text-white">20×20 mm single-wall square tower</span>, centered at (50, 50).
+                  Each 5 mm section uses a different flow %, printed from bottom to top.
+                </p>
+                <div className="bg-blue-950/20 border border-blue-800/30 rounded-lg p-3 text-xs space-y-1">
+                  <p className="text-blue-300 font-medium">What to look for:</p>
+                  <ul className="space-y-0.5 list-disc list-inside text-gray-400">
+                    <li>Even wall thickness across all sections — confirms your virtual diameter is correct</li>
+                    <li>No banding, gaps, or bulging between sections</li>
+                    <li>The section with the best-looking walls (no over/under) confirms your target flow %</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs text-gray-500 mb-2">Flow range to test</p>
+                <div className="grid grid-cols-3 gap-3">
+                  <NumField label="Min flow (%)" value={towerFlow.min}  min={40}  max={200} onChange={v => setTowerFlow(f => ({ ...f, min: v }))} />
+                  <NumField label="Max flow (%)" value={towerFlow.max}  min={40}  max={200} onChange={v => setTowerFlow(f => ({ ...f, max: v }))} />
+                  <NumField label="Step (%)"     value={towerFlow.step} min={1}   max={30}  onChange={v => setTowerFlow(f => ({ ...f, step: v }))} />
+                </div>
+                <div className="flex items-center justify-between mt-2">
+                  <p className="text-xs text-gray-600">
+                    {towerSteps.length} sections: {towerSteps.join(', ')} %
+                  </p>
+                  <p className="text-xs text-gray-700">
+                    tower height: ~{(towerSteps.length * 5).toFixed(0)} mm
+                  </p>
+                </div>
+              </div>
+
+              <button onClick={() => generate('tower')}
+                className="px-4 py-2.5 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-sm font-medium transition w-full">
+                Download Flow Tower G-code
+              </button>
+
+              <div className="text-xs text-gray-600 bg-gray-800/40 rounded-lg p-3">
+                After printing, set the best-performing flow % as your <span className="text-gray-400">Base Flow</span> in the profile.
+                A typical starting range with pellets is 80–120% — use a narrower range once you're close.
+              </div>
+            </div>
+          </StepCard>
+
+          {/* ── Step 4: Cube Validation ── */}
+          <StepCard step={4} title="Cube Validation" color="green">
+            <div className="space-y-4">
+              <div className="text-sm text-gray-400 space-y-1.5">
+                <p>
+                  Prints a <span className="text-white">20×20×10 mm single-wall cube</span> using your profile's current settings — no flow sweep.
+                  This is your final real-world check before slicing actual parts.
+                </p>
+                <div className="bg-green-950/20 border border-green-800/30 rounded-lg p-3 text-xs space-y-2">
+                  <p className="text-green-300 font-medium">Pass criteria:</p>
+                  <ul className="space-y-0.5 list-disc list-inside text-gray-400">
+                    <li>Wall thickness ≈ <span className="font-mono text-white">{effectiveNozzle(profile).toFixed(2)} mm</span> (your nozzle diameter)</li>
+                    <li>No gaps between layers, no overhanging blobs</li>
+                    <li>Consistent surface texture all around</li>
+                    <li>Corners are sharp, not rounded from over-extrusion</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-xs font-mono">
+                <SummaryRow label="Size"       value="20 × 20 × 10 mm" />
+                <SummaryRow label="Layers"     value={`${Math.round(10 / profile.layerHeightMm)} @ ${profile.layerHeightMm} mm`} />
+                <SummaryRow label="Flow"       value={`${profile.materialFlowPct} %`} />
+                <SummaryRow label="Wall target" value={`≈ ${effectiveNozzle(profile).toFixed(2)} mm`} highlight />
+              </div>
+
+              <button onClick={() => generate('cube')}
+                className="px-4 py-2.5 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm font-medium transition w-full">
+                Download Cube Validation G-code
+              </button>
+
+              <div className="text-xs text-gray-600 bg-green-950/10 border border-green-900/30 rounded-lg p-3">
+                If the cube passes, your pellet profile is calibrated. You can now slice parts with this profile and
+                expect accurate extrusion. Run this test again any time you change material, temperature, or virtual diameter.
+              </div>
+            </div>
+          </StepCard>
         </>
       )}
     </div>
   )
 }
 
-// ── Sub-components ────────────────────────────────────────────────────────────
+// ── Sub-components ─────────────────────────────────────────────────────────────
 
-function TestCard({
-  title, description, color, children,
+function StepCard({
+  step, title, color, children,
 }: {
-  title: string; description: string
-  color: 'amber' | 'blue' | 'green'
+  step: number; title: string
+  color: 'amber' | 'orange' | 'blue' | 'green'
   children: React.ReactNode
 }) {
-  const borderCls = { amber: 'border-amber-800/50', blue: 'border-blue-800/50', green: 'border-green-800/50' }
-  const titleCls  = { amber: 'text-amber-300', blue: 'text-blue-300', green: 'text-green-300' }
+  const styles = {
+    amber:  { border: 'border-amber-800/50',  badge: 'bg-amber-900/40 text-amber-300 border-amber-700',  title: 'text-amber-300'  },
+    orange: { border: 'border-orange-800/50', badge: 'bg-orange-900/40 text-orange-300 border-orange-700', title: 'text-orange-300' },
+    blue:   { border: 'border-blue-800/50',   badge: 'bg-blue-900/40 text-blue-300 border-blue-700',   title: 'text-blue-300'   },
+    green:  { border: 'border-green-800/50',  badge: 'bg-green-900/40 text-green-300 border-green-700',  title: 'text-green-300'  },
+  }
+  const s = styles[color]
   return (
-    <div className={`bg-gray-900 border rounded-xl p-5 space-y-3 ${borderCls[color]}`}>
-      <h3 className={`font-medium ${titleCls[color]}`}>{title}</h3>
-      <p className="text-sm text-gray-400">{description}</p>
+    <div className={`bg-gray-900 border rounded-xl p-5 space-y-4 ${s.border}`}>
+      <div className="flex items-center gap-3">
+        <span className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border shrink-0 ${s.badge}`}>
+          {step}
+        </span>
+        <h3 className={`font-medium text-base ${s.title}`}>{title}</h3>
+      </div>
       {children}
     </div>
   )
@@ -469,11 +828,11 @@ function NumField({
   )
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function SummaryRow({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
   return (
     <>
-      <span className="text-gray-500">{label}:</span>
-      <span className="text-white col-span-1">{value}</span>
+      <span className="text-gray-600 text-[11px]">{label}:</span>
+      <span className={`text-[11px] font-mono ${highlight ? 'text-white' : 'text-gray-400'}`}>{value}</span>
     </>
   )
 }

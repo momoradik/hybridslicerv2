@@ -100,7 +100,7 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
         var spindleRpm = cmd.SpindleRpmOverride ?? tool.RecommendedRpm;
         gcodeBuilder.AppendLine($"; Tool     : {tool.Name}  Ø{tool.DiameterMm} mm  Flute: {tool.FluteLengthMm} mm  Tool length: {tool.ToolLengthMm} mm  Feed: {tool.RecommendedFeedMmPerMin} mm/min  RPM: {spindleRpm}{(cmd.SpindleRpmOverride.HasValue ? $" (override — tool default: {tool.RecommendedRpm})" : "")}");
         gcodeBuilder.AppendLine($"; Nozzle   : Ø{profile.LineWidthMm} mm  Layer height: {profile.LayerHeightMm} mm");
-        gcodeBuilder.AppendLine($"; Interval : {(cmd.AutoMachiningFrequency ? "AUTO (flute-based)" : $"every {cmd.MachineEveryNLayers} layer(s)")}  Axial depth: {axialDepthMm:F3} mm");
+        gcodeBuilder.AppendLine($"; Interval : {(cmd.AutoMachiningFrequency ? "AUTO (flute-based)" : $"every {cmd.MachineEveryNLayers} part layer(s) (support-only layers excluded)")}  Axial depth: {axialDepthMm:F3} mm");
         gcodeBuilder.AppendLine($"; Options  : MachineInnerWalls={cmd.MachineInnerWalls}  AvoidSupports={cmd.AvoidSupports}  SupportClearance={cmd.SupportClearanceMm:F2} mm  AutoFreq={cmd.AutoMachiningFrequency}");
         gcodeBuilder.AppendLine(cmd.ZSafetyOffsetMm > 0
             ? $"; Z Offset  : +{cmd.ZSafetyOffsetMm:F3} mm — all machining passes raised by this amount above nominal layer height"
@@ -217,8 +217,14 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                 var spindleTriggered = tool.ToolLengthMm > 0 &&
                     effectiveZ + tool.ToolLengthMm > machine.BedHeightMm * 0.95;
 
+                // Only schedule machining on layers that actually have part geometry.
+                // Support-only / draft-shield-only layers have nothing to machine; scheduling
+                // on them would waste a machining event and confuse the process plan.
+                var hasPartGeometryAuto = layerBounds.TryGetValue(curaIdx, out var autoLayBnd) && autoLayBnd.Area > 0;
+
                 if ((fluteTriggered || accessBlocked || spindleTriggered)
-                    && pending >= profile.LayerHeightMm) // must have at least one layer of material
+                    && pending >= profile.LayerHeightMm
+                    && hasPartGeometryAuto) // must be a real part layer, not support-only
                 {
                     autoLayers.Add(layerIdx);
                     lastMachinedZ = currentZ;
@@ -237,9 +243,36 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
         }
         else
         {
-            layersToMachine = Enumerable.Range(1, (int)Math.Ceiling((double)job.TotalPrintLayers!.Value / cmd.MachineEveryNLayers))
-                .Select(i => i * cmd.MachineEveryNLayers)
-                .Where(l => l <= job.TotalPrintLayers!.Value);
+            // Manual mode: machine after every N *part* layers.
+            //
+            // A "part layer" is any layer that contains real printed geometry — i.e. it has
+            // at least one outer-wall or inner-wall path in the Cura G-code.
+            // Support-only layers, draft-shield-only layers, and any layer that Cura emits
+            // with no wall paths (e.g. a pure-SUPPORT or pure-SKIN layer at a bridging height)
+            // do NOT count toward the N-layer interval.
+            //
+            // This ensures that when the user sets N=5, machining happens after every 5 layers
+            // of the actual printed part — regardless of how many support-only layers Cura
+            // interleaves between them.
+            var manualLayers  = new List<int>();
+            var partLayerCount = 0;
+            for (var li = 1; li <= job.TotalPrintLayers!.Value; li++)
+            {
+                var ci = li - 1; // Cura uses 0-based layer indices
+                if (!parsed.Layers.TryGetValue(ci, out var ld)) continue;
+                if (ld.OuterWallPaths.Count == 0 && ld.InnerWallPaths.Count == 0) continue; // not a part layer
+
+                partLayerCount++;
+                if (partLayerCount % cmd.MachineEveryNLayers == 0)
+                    manualLayers.Add(li);
+            }
+            layersToMachine = manualLayers;
+            _logger.LogInformation(
+                "Manual machining schedule (every {N} part layers): {Sched} events from {Part} part layers ({Total} total)",
+                cmd.MachineEveryNLayers, manualLayers.Count, partLayerCount, job.TotalPrintLayers!.Value);
+            gcodeBuilder.AppendLine($"; MANUAL machining: every {cmd.MachineEveryNLayers} part layer(s)  " +
+                                    $"({partLayerCount} part layers / {job.TotalPrintLayers!.Value} total → {manualLayers.Count} event(s))");
+            gcodeBuilder.AppendLine();
         }
 
         try

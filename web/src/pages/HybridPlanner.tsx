@@ -184,7 +184,7 @@ export default function HybridPlanner() {
             </Field>
 
             {!autoMachiningFrequency && (
-              <Field label={`Machine every N layers (N = ${machineEveryN})`}>
+              <Field label={`Machine every N part layers (N = ${machineEveryN})`}>
                 <div className="flex items-center gap-2">
                   <input
                     type="range"
@@ -202,7 +202,10 @@ export default function HybridPlanner() {
                   />
                 </div>
                 <div className="flex justify-between text-xs text-gray-500 mt-1">
-                  <span>Every layer</span><span>Every 100 layers</span>
+                  <span>Every part layer</span><span>Every 100 part layers</span>
+                </div>
+                <div className="text-xs text-gray-600 mt-1">
+                  Support-only and non-geometry layers are excluded from the count.
                 </div>
               </Field>
             )}
@@ -463,19 +466,24 @@ export default function HybridPlanner() {
                     Auto frequency — actual schedule will appear here after generating toolpaths.
                   </p>
                 ) : (
-                  selectedJob.totalPrintLayers && Array.from(
-                    { length: Math.ceil(selectedJob.totalPrintLayers / machineEveryN) },
-                    (_, i) => {
-                      const end   = (i + 1) * machineEveryN
-                      const start = i * machineEveryN + 1
-                      return (
-                        <div key={i} className="space-y-0.5">
-                          <div className="text-blue-400">▣ Print L{start}–L{Math.min(end, selectedJob.totalPrintLayers!)}</div>
-                          <div className="pl-4 text-gray-600">⚙ CNC @ L{Math.min(end, selectedJob.totalPrintLayers!)}</div>
-                        </div>
-                      )
-                    }
-                  )
+                  <>
+                    <p className="text-[11px] text-gray-600 mb-2">
+                      Estimated schedule (support-only layers excluded after generation):
+                    </p>
+                    {selectedJob.totalPrintLayers && Array.from(
+                      { length: Math.ceil(selectedJob.totalPrintLayers / machineEveryN) },
+                      (_, i) => {
+                        const end   = (i + 1) * machineEveryN
+                        const start = i * machineEveryN + 1
+                        return (
+                          <div key={i} className="space-y-0.5">
+                            <div className="text-blue-400">▣ Print L{start}–L{Math.min(end, selectedJob.totalPrintLayers!)}</div>
+                            <div className="pl-4 text-gray-600">⚙ CNC @ {machineEveryN} part layers</div>
+                          </div>
+                        )
+                      }
+                    )}
+                  </>
                 )}
               </div>
             ) : (
