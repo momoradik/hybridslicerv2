@@ -149,22 +149,55 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
                 continue;
             }
 
+            // Validate CRC direction:
+            // Outer wall: buffer expands outward, so compensated area must be >= original polygon area.
+            // If it shrank, the input geometry was self-intersecting in a way that caused Buffer() to collapse.
+            // Inner wall: buffer shrinks inward, so compensated area must be <= original polygon area.
+            // If it expanded, the offset direction flipped and the tool would enter solid material.
+            if (geom is Polygon origPoly)
+            {
+                var origArea = origPoly.Area;
+                if (request.IsOuterWall && compensated.Area < origArea - MinAreaMm2)
+                {
+                    _logger.LogWarning(
+                        "Outer-wall CRC produced smaller geometry at Z={Z} " +
+                        "(orig={Orig:F2} mm2 -> comp={Comp:F2} mm2) -- likely self-intersecting Cura path, skipping",
+                        request.ZHeightMm, origArea, compensated.Area);
+                    unmachinableRegions.Add(new UnmachinableRegion(request.ZHeightMm, "InvalidCrcDirection", segBounds));
+                    continue;
+                }
+                if (!request.IsOuterWall && compensated.Area > origArea + MinAreaMm2)
+                {
+                    _logger.LogWarning(
+                        "Inner-wall CRC produced larger geometry at Z={Z} " +
+                        "(orig={Orig:F2} mm2 -> comp={Comp:F2} mm2) -- offset direction invalid, tool would enter solid, skipping",
+                        request.ZHeightMm, origArea, compensated.Area);
+                    unmachinableRegions.Add(new UnmachinableRegion(request.ZHeightMm, "InvalidCrcDirection", segBounds));
+                    continue;
+                }
+            }
+
             // ── Build local forbidden zone for this segment ────────────────────────────
-            // The forbidden zone is the union of all support paths buffered by (toolRadius + clearance).
-            // For outer walls we also add the printed wall polygon itself as a safety net:
-            // the tool must never enter solid material even if geometry is degenerate.
+            // The forbidden zone starts as the buffered support-path union (if any).
+            // ALWAYS add the printed wall polygon to the forbidden zone for outer walls.
+            // This is the primary "never damage the part" safety net: any contour arc that
+            // would enter the solid material gets clipped out regardless of whether support
+            // paths are present. Previously this was gated on forbiddenZone != null, which
+            // meant no protection when there were no support paths.
             Geometry? localForbidden = forbiddenZone;
-            if (forbiddenZone is not null && request.IsOuterWall && geom is Polygon)
+            if (request.IsOuterWall && geom is Polygon)
             {
                 try
                 {
                     var geomNorm = geom.Buffer(0);
-                    localForbidden = forbiddenZone.Union(geomNorm);
+                    localForbidden = localForbidden is null
+                        ? geomNorm
+                        : localForbidden.Union(geomNorm);
                 }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex,
-                        "Could not add part interior to forbidden zone at Z={Z}, using support-only",
+                        "Could not add part interior to forbidden zone at Z={Z}, proceeding without part-interior guard",
                         request.ZHeightMm);
                 }
             }

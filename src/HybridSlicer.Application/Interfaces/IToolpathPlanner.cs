@@ -75,7 +75,7 @@ public sealed record ToolpathResult(
 /// </summary>
 public sealed record UnmachinableRegion(
     double ZHeightMm,
-    /// <summary>"ToolTooWide" | "FluteTooShort" | "SupportBlocked" | "PartInteriorCollision"</summary>
+    /// <summary>"ToolTooWide" | "FluteTooShort" | "SupportBlocked" | "PartInteriorCollision" | "InvalidCrcDirection"</summary>
     string Reason,
     BoundingBox2D Bounds);
 
