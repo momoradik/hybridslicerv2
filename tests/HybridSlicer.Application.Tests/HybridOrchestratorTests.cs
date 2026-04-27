@@ -47,6 +47,8 @@ public class HybridOrchestratorTests : IDisposable
             JobId: jobId,
             PrintGCodePath: printPath,
             CncGCodeByLayer: cncByLayer,
+            CncPreamble: "",
+            CncPostamble: "",
             MachineEveryNLayers: 5,
             TotalPrintLayers: 20,
             CncToolId: toolId,

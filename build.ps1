@@ -1,17 +1,17 @@
-﻿# ============================================================
-# HybridSlicer — Full Build & Run Script
-# Usage:  .\build.ps1
-# ============================================================
+# HybridSlicer build script
+# Steps: stop server, build frontend, build .NET, copy launcher, start via launcher
+# Bonus: if Inno Setup 6 is installed, also publishes self-contained + compiles installer
 
 $ErrorActionPreference = "Stop"
 
-$Root     = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Web      = "$Root\web"
-$WorkDir  = "$Root\src\HybridSlicer.Api\bin\Debug\net8.0"
-$LogDir   = "$Root\logs"
-$LogFile  = "$LogDir\server.log"
+$Root        = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Web         = "$Root\web"
+$ApiOut      = "$Root\src\HybridSlicer.Api\bin\Debug\net8.0"
+$LauncherOut = "$Root\src\HybridSlicer.Launcher\bin\Debug\net8.0-windows"
+$PublishDir  = "$Root\publish"
+$LogDir      = "$Root\logs"
+$Iscc        = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
-# ── Detect local network IP ──────────────────────────────────────────────────
 $LocalIP = (
     Get-NetIPAddress -AddressFamily IPv4 |
     Where-Object { $_.IPAddress -notmatch '^127\.' -and
@@ -19,7 +19,6 @@ $LocalIP = (
                    $_.PrefixOrigin -ne 'WellKnown' } |
     Select-Object -First 1
 ).IPAddress
-
 if (-not $LocalIP) { $LocalIP = "localhost" }
 
 Write-Host ""
@@ -29,20 +28,29 @@ Write-Host "  Network IP : $LocalIP" -ForegroundColor Yellow
 Write-Host "================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# ── Step 1: Stop any running server ─────────────────────────────────────────
-Write-Host "[1/4] Stopping existing server on port 5000..." -ForegroundColor DarkGray
+# 1 - Stop existing server and launcher window
+Write-Host "[1/5] Stopping existing server and launcher..." -ForegroundColor DarkGray
+
+# Kill the API process listening on port 5000
 $conn = Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue
 if ($conn) {
     Stop-Process -Id $conn[0].OwningProcess -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 600
-    Write-Host "      Stopped (PID $($conn[0].OwningProcess))." -ForegroundColor DarkGray
+    Write-Host "      Stopped API (PID $($conn[0].OwningProcess))." -ForegroundColor DarkGray
 } else {
-    Write-Host "      Nothing running." -ForegroundColor DarkGray
+    Write-Host "      No server on port 5000." -ForegroundColor DarkGray
 }
 
-# ── Step 2: Build frontend ───────────────────────────────────────────────────
+# Kill any open launcher window (holds HybridSlicer.dll locked between runs)
+Get-Process -Name "HybridSlicer" -ErrorAction SilentlyContinue | ForEach-Object {
+    $_.Kill()
+    Write-Host "      Stopped launcher (PID $($_.Id))." -ForegroundColor DarkGray
+}
+
+Start-Sleep -Milliseconds 800
+
+# 2 - Build frontend
 Write-Host ""
-Write-Host "[2/4] Building frontend (npm run build)..." -ForegroundColor Cyan
+Write-Host "[2/5] Building frontend (npm run build)..." -ForegroundColor Cyan
 Push-Location $Web
 try {
     npm run build
@@ -52,37 +60,47 @@ try {
 }
 Write-Host "      Frontend OK." -ForegroundColor Green
 
-# ── Step 3: Build backend ────────────────────────────────────────────────────
+# 3 - Build .NET solution (includes Launcher)
 Write-Host ""
-Write-Host "[3/4] Building backend (dotnet build)..." -ForegroundColor Cyan
+Write-Host "[3/5] Building .NET solution..." -ForegroundColor Cyan
 Push-Location $Root
 try {
+    dotnet restore -v q
     dotnet build --no-restore -v q
     if ($LASTEXITCODE -ne 0) { throw "dotnet build failed (exit $LASTEXITCODE)" }
 } finally {
     Pop-Location
 }
-Write-Host "      Backend OK." -ForegroundColor Green
+Write-Host "      Build OK." -ForegroundColor Green
 
-# ── Step 4: Start server ─────────────────────────────────────────────────────
+# 4 - Copy launcher artifacts next to the API binary
 Write-Host ""
-Write-Host "[4/4] Starting server (bound to all interfaces)..." -ForegroundColor Cyan
+Write-Host "[4/5] Copying launcher to API output..." -ForegroundColor Cyan
+if (Test-Path $LauncherOut) {
+    Get-ChildItem "$LauncherOut\HybridSlicer.*" | ForEach-Object {
+        Copy-Item $_.FullName -Destination $ApiOut -Force
+    }
+    Write-Host "      OK -> $ApiOut\HybridSlicer.exe" -ForegroundColor Green
+} else {
+    Write-Host "      WARNING: $LauncherOut not found" -ForegroundColor Yellow
+}
 
-# Bind to * so the app is reachable at both localhost AND the network IP
-$Urls = "http://*:5000"
+# 5 - Start API directly (dev mode; end users double-click HybridSlicer.exe which
+#     runs first-time setup before starting the server)
+Write-Host ""
+Write-Host "[5/5] Starting server..." -ForegroundColor Cyan
 
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
 
 Start-Process dotnet `
-    -ArgumentList "HybridSlicer.Api.dll --urls `"$Urls`"" `
-    -WorkingDirectory $WorkDir `
+    -ArgumentList "HybridSlicer.Api.dll --urls `"http://*:5000`"" `
+    -WorkingDirectory $ApiOut `
     -WindowStyle Hidden `
-    -RedirectStandardOutput $LogFile `
+    -RedirectStandardOutput "$LogDir\server.log" `
     -RedirectStandardError  "$LogDir\server-err.log"
 
-# Wait for port to open (up to 15 s)
 $started = $false
-for ($i = 0; $i -lt 15; $i++) {
+for ($i = 0; $i -lt 20; $i++) {
     Start-Sleep -Seconds 1
     $c = Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue
     if ($c) { $started = $true; break }
@@ -94,21 +112,50 @@ if ($started) {
     Write-Host "================================================" -ForegroundColor Green
     Write-Host "  Server is running!" -ForegroundColor Green
     Write-Host ""
-    Write-Host "  Local   : http://localhost:5000"   -ForegroundColor White
-    Write-Host "  Network : http://${LocalIP}:5000"  -ForegroundColor Yellow
+    Write-Host "  Local   : http://localhost:5000"  -ForegroundColor White
+    Write-Host "  Network : http://${LocalIP}:5000" -ForegroundColor Yellow
     Write-Host "  API docs: http://localhost:5000/swagger" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "  Logs    : $LogFile" -ForegroundColor DarkGray
     Write-Host "================================================" -ForegroundColor Green
 } else {
     Write-Host "================================================" -ForegroundColor Red
-    Write-Host "  Server did NOT start within 15 seconds." -ForegroundColor Red
-    Write-Host "  Check logs: $LogFile" -ForegroundColor Red
+    Write-Host "  Server did NOT start within 20 seconds." -ForegroundColor Red
+    Write-Host "  Check logs: $LogDir" -ForegroundColor Red
     Write-Host "================================================" -ForegroundColor Red
     if (Test-Path "$LogDir\server-err.log") {
-        Write-Host ""
-        Write-Host "--- server-err.log ---" -ForegroundColor Red
         Get-Content "$LogDir\server-err.log" | Select-Object -Last 20
     }
     exit 1
+}
+
+# Optional: publish self-contained + compile Inno Setup installer
+Write-Host ""
+Write-Host "-- Installer (optional) ---" -ForegroundColor DarkGray
+
+if (Test-Path $Iscc) {
+    Write-Host "   Inno Setup found. Publishing self-contained build..." -ForegroundColor DarkGray
+
+    dotnet publish "$Root\src\HybridSlicer.Api\HybridSlicer.Api.csproj" `
+        -c Release -r win-x64 --self-contained true `
+        -p:PublishSingleFile=false `
+        -o "$PublishDir" -v q
+    if ($LASTEXITCODE -ne 0) { Write-Host "   API publish failed." -ForegroundColor Yellow }
+    else {
+        dotnet publish "$Root\src\HybridSlicer.Launcher\HybridSlicer.Launcher.csproj" `
+            -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=false `
+            -o "$PublishDir" -v q
+        if ($LASTEXITCODE -ne 0) { Write-Host "   Launcher publish failed." -ForegroundColor Yellow }
+        else {
+            Write-Host "   Compiling installer..." -ForegroundColor DarkGray
+            & $Iscc "$Root\installer\HybridSlicer.iss"
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "   Installer -> dist\HybridSlicer-Setup.exe" -ForegroundColor Green
+            } else {
+                Write-Host "   Inno Setup compile failed." -ForegroundColor Yellow
+            }
+        }
+    }
+} else {
+    Write-Host "   Inno Setup 6 not found - skipping installer build." -ForegroundColor DarkGray
+    Write-Host "   Install Inno Setup 6 to enable installer generation." -ForegroundColor DarkGray
 }

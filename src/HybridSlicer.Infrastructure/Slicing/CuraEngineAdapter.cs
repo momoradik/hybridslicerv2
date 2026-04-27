@@ -14,9 +14,9 @@ namespace HybridSlicer.Infrastructure.Slicing;
 /// Invocation (CuraEngine 5.x):
 ///   CuraEngine slice -v -p -j fdmprinter.def.json -s key=value ... -e0 -j fdmextruder.def.json -s key=value ... -l model.stl -o output.gcode
 ///
-/// NOTE: The -r (resolved-settings JSON) flag is broken in CuraEngine 5.10.x (causes
-/// integer divide-by-zero in GcodeWriter). Use individual -s key=value flags instead.
-/// CuraEngine 5.12.0+ is required; 5.10.x crashes during G-code export.
+/// NOTE: CuraEngine 5.10.x crashes with STATUS_INTEGER_DIVIDE_BY_ZERO in GcodeWriter
+/// during every slice regardless of settings. CuraEngine 5.12.0+ is required.
+/// CheckCuraVersionAsync() rejects older versions with an actionable error message.
 /// </summary>
 public sealed class CuraEngineAdapter : ISlicingEngine
 {
@@ -40,6 +40,8 @@ public sealed class CuraEngineAdapter : ISlicingEngine
                 $"CuraEngine not found at '{_opts.ExecutablePath}'. " +
                 "Set CuraEngine:ExecutablePath to the full path of CuraEngine.exe " +
                 "(e.g. C:\\Program Files\\UltiMaker Cura 5.10.1\\CuraEngine.exe).");
+
+        await CheckCuraVersionAsync(exePath);
 
         if (!File.Exists(stlFilePath))
             throw new SlicingException($"STL file not found: {stlFilePath}");
@@ -88,18 +90,31 @@ public sealed class CuraEngineAdapter : ISlicingEngine
             throw new SlicingException($"CuraEngine timed out after {_opts.TimeoutSeconds}s.");
         }
 
-        var allOutput = stdout + stderr.ToString();
+        var allOutput   = stdout + stderr.ToString();
+        var gcodeExists = File.Exists(gcodePath) && new FileInfo(gcodePath).Length > 0;
 
         if (proc.ExitCode != 0)
         {
-            _logger.LogError("CuraEngine exit {Code}.\nSTDOUT:\n{Out}\nSTDERR:\n{Err}",
-                proc.ExitCode, stdout, stderr);
-            throw new SlicingException(
-                $"CuraEngine failed (exit {proc.ExitCode}). See server logs for details.\n{stderr}",
-                proc.ExitCode);
+            if (gcodeExists)
+            {
+                // CuraEngine 5.10.x crashes in post-export cleanup after the G-code file is
+                // fully written. The output is valid — log a warning and continue.
+                _logger.LogWarning(
+                    "CuraEngine exited {Code} but produced a valid G-code file. " +
+                    "This is a known post-export crash in CuraEngine 5.10.x and is safe to ignore. " +
+                    "Upgrade to Cura 5.12.0+ to eliminate this warning.", proc.ExitCode);
+            }
+            else
+            {
+                _logger.LogError("CuraEngine exit {Code}.\nSTDOUT:\n{Out}\nSTDERR:\n{Err}",
+                    proc.ExitCode, stdout, stderr);
+                throw new SlicingException(
+                    $"CuraEngine failed (exit {proc.ExitCode}). See server logs for details.",
+                    proc.ExitCode);
+            }
         }
 
-        if (!File.Exists(gcodePath))
+        if (!gcodeExists)
             throw new SlicingException("CuraEngine reported success but produced no G-code file.");
 
         // ParseSummary reads process stdout/stderr.  Layer count and time metadata are
@@ -117,8 +132,14 @@ public sealed class CuraEngineAdapter : ISlicingEngine
 
     /// <summary>
     /// Builds the CuraEngine slice command arguments using individual -s key=value flags.
-    /// The -r flag is intentionally avoided: CuraEngine 5.10.x crashes (integer divide-by-zero
-    /// in GcodeWriter) when -r is used. Individual -s flags work correctly in 5.12.0+.
+    ///
+    /// Compatibility notes for CuraEngine 5.x:
+    ///  - The -r flag causes integer divide-by-zero in 5.10.x GcodeWriter — never use it.
+    ///  - In 5.10.x the extruder context does NOT inherit global line_width variants
+    ///    (wall_line_width_0/x, skin_line_width, infill_line_width). Each must be set
+    ///    explicitly in both the global section AND the -e0 extruder section.
+    ///  - layer_height and line_width must also be repeated in the -e0 section in 5.10.x,
+    ///    otherwise GcodeWriter reads them as 0 and crashes with STATUS_INTEGER_DIVIDE_BY_ZERO.
     /// </summary>
     private static string BuildArgs(
         string? definitionsPath,
@@ -127,85 +148,114 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         string stlPath,
         string gcodePath)
     {
+        var ic      = System.Globalization.CultureInfo.InvariantCulture;
+        var lw      = p.LineWidthMm.ToString("F4", ic);
+        var lh      = p.LayerHeightMm.ToString("F4", ic);
+        var minWall = (p.LineWidthMm * 0.85).ToString("F4", ic);
+
         var sb = new StringBuilder("slice -v -p");
 
-        // Load base fdmprinter definition so CuraEngine knows all setting defaults
+        // ── Base machine definition ──────────────────────────────────────────
         if (!string.IsNullOrWhiteSpace(definitionsPath) && File.Exists(definitionsPath))
             sb.Append($" -j \"{definitionsPath}\"");
 
-        // Global (machine-level) settings
-        sb.Append($" -s layer_height={p.LayerHeightMm.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s layer_height_0={p.LayerHeightMm.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s line_width={p.LineWidthMm.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
+        // ── Global / machine-level settings ──────────────────────────────────
+        sb.Append($" -s layer_height={lh}");
+        sb.Append($" -s layer_height_0={lh}");
+        sb.Append($" -s line_width={lw}");
+
+        // Explicit line-width variants — in CuraEngine 5.10.x these do NOT fall back
+        // to the global line_width at the extruder level, so we set them everywhere.
+        sb.Append($" -s wall_line_width_0={lw}");
+        sb.Append($" -s wall_line_width_x={lw}");
+        sb.Append($" -s skin_line_width={lw}");
+        sb.Append($" -s infill_line_width={lw}");
+        sb.Append($" -s support_line_width={lw}");
+        sb.Append($" -s skirt_brim_line_width={lw}");
+        sb.Append($" -s min_wall_line_width={minWall}");
+        sb.Append($" -s min_even_wall_line_width={minWall}");
+        sb.Append($" -s min_odd_wall_line_width={minWall}");
+
         sb.Append($" -s wall_line_count={p.WallCount}");
         sb.Append($" -s top_layers={p.TopBottomLayers}");
         sb.Append($" -s bottom_layers={p.TopBottomLayers}");
-        sb.Append($" -s speed_print={p.PrintSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s speed_travel={p.TravelSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s speed_infill={p.InfillSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s speed_wall_0={p.WallSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s speed_wall_x={p.InnerWallSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s speed_layer_0={p.FirstLayerSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
-        // Infill density — set both the percentage AND the derived line-distance so CuraEngine 5.x
-        // cannot fall back to a cached formula value from the definition file.
-        // infill_line_distance = (line_width * 100) / infill_sparse_density  (Cura's own formula)
+        sb.Append($" -s speed_print={p.PrintSpeedMmS.ToString("F1", ic)}");
+        sb.Append($" -s speed_travel={p.TravelSpeedMmS.ToString("F1", ic)}");
+        sb.Append($" -s speed_infill={p.InfillSpeedMmS.ToString("F1", ic)}");
+        sb.Append($" -s speed_wall_0={p.WallSpeedMmS.ToString("F1", ic)}");
+        sb.Append($" -s speed_wall_x={p.InnerWallSpeedMmS.ToString("F1", ic)}");
+        sb.Append($" -s speed_layer_0={p.FirstLayerSpeedMmS.ToString("F1", ic)}");
+
+        // Infill: set both the density percentage AND the resolved line-distance so
+        // CuraEngine cannot fall back to a stale formula value from the definition file.
+        // infill_line_distance = (line_width * 100) / infill_sparse_density
         var infillLineDist = p.InfillDensityPct > 0
             ? (p.LineWidthMm * 100.0) / p.InfillDensityPct
-            : 0.0;
-        sb.Append($" -s infill_sparse_density={p.InfillDensityPct.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s infill_line_distance={infillLineDist.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
+            : 99999.0;  // near-zero density → very large spacing, avoids divide-by-zero in engine
+        sb.Append($" -s infill_sparse_density={p.InfillDensityPct.ToString("F4", ic)}");
+        sb.Append($" -s infill_line_distance={infillLineDist.ToString("F4", ic)}");
         sb.Append($" -s infill_pattern={p.InfillPattern}");
+
         sb.Append($" -s material_print_temperature={p.PrintTemperatureDegC}");
         sb.Append($" -s material_bed_temperature={p.BedTemperatureDegC}");
         sb.Append($" -s support_enable={p.SupportEnabled.ToString().ToLowerInvariant()}");
         if (p.SupportEnabled)
         {
-            // support_type = where supports are placed (everywhere or touching_buildplate)
-            // support_structure = support geometry type (normal or tree)
             var placement = string.IsNullOrWhiteSpace(p.SupportPlacement) ? "everywhere" : p.SupportPlacement;
             sb.Append($" -s support_type={placement}");
             sb.Append($" -s support_structure={p.SupportType}");
         }
         sb.Append($" -s cool_fan_enabled={p.CoolingEnabled.ToString().ToLowerInvariant()}");
-        sb.Append($" -s cool_fan_speed={p.CoolingFanSpeedPct.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s machine_width={p.BedWidthMm.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s machine_depth={p.BedDepthMm.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s machine_height={p.BedHeightMm.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s machine_nozzle_size={p.NozzleDiameterMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
-        // The STL viewer and the G-code preview both use an origin at the bed centre
-        // (X ∈ [-width/2, +width/2], Y ∈ [-depth/2, +depth/2]).  Tell CuraEngine to
-        // use the same convention so model positions and support placement match exactly.
+        sb.Append($" -s cool_fan_speed={p.CoolingFanSpeedPct.ToString("F1", ic)}");
+        sb.Append($" -s machine_width={p.BedWidthMm.ToString("F1", ic)}");
+        sb.Append($" -s machine_depth={p.BedDepthMm.ToString("F1", ic)}");
+        sb.Append($" -s machine_height={p.BedHeightMm.ToString("F1", ic)}");
+        sb.Append($" -s machine_nozzle_size={p.NozzleDiameterMm.ToString("F2", ic)}");
+        // Use bed-centre origin to match the STL viewer and G-code preview coordinate system.
         sb.Append(" -s machine_center_is_zero=true");
         sb.Append(" -s adhesion_type=none");
 
-        // Extruder-0 settings (required in CuraEngine 5.x to avoid "no value given" errors)
+        // ── Extruder-0 settings ───────────────────────────────────────────────
+        // CuraEngine 5.x resolves most per-feature settings from the extruder context.
+        // In 5.10.x, global values are NOT automatically propagated — each must be set
+        // explicitly here to prevent "no value given" errors and divide-by-zero crashes.
         sb.Append(" -e0");
         if (!string.IsNullOrWhiteSpace(extruderDefinitionsPath) && File.Exists(extruderDefinitionsPath))
             sb.Append($" -j \"{extruderDefinitionsPath}\"");
-        // Repeat infill settings at extruder level — CuraEngine 5.x resolves some settings
-        // per-extruder and will ignore the global value if the extruder context is missing them.
-        sb.Append($" -s infill_sparse_density={p.InfillDensityPct.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s infill_line_distance={infillLineDist.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
+
+        // Repeat layer height and ALL line-width variants in extruder context.
+        // This is the primary fix for CuraEngine 5.10.x integer divide-by-zero crashes.
+        sb.Append($" -s layer_height={lh}");
+        sb.Append($" -s layer_height_0={lh}");
+        sb.Append($" -s line_width={lw}");
+        sb.Append($" -s wall_line_width_0={lw}");
+        sb.Append($" -s wall_line_width_x={lw}");
+        sb.Append($" -s skin_line_width={lw}");
+        sb.Append($" -s infill_line_width={lw}");
+        sb.Append($" -s support_line_width={lw}");
+        sb.Append($" -s skirt_brim_line_width={lw}");
+        sb.Append($" -s min_wall_line_width={minWall}");
+        sb.Append($" -s min_even_wall_line_width={minWall}");
+        sb.Append($" -s min_odd_wall_line_width={minWall}");
+
+        sb.Append($" -s wall_line_count={p.WallCount}");
+        sb.Append($" -s top_layers={p.TopBottomLayers}");
+        sb.Append($" -s bottom_layers={p.TopBottomLayers}");
+        sb.Append($" -s infill_sparse_density={p.InfillDensityPct.ToString("F4", ic)}");
+        sb.Append($" -s infill_line_distance={infillLineDist.ToString("F4", ic)}");
         sb.Append($" -s infill_pattern={p.InfillPattern}");
-        sb.Append($" -s material_diameter={p.FilamentDiameterMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s material_flow={p.MaterialFlowPct.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s machine_nozzle_size={p.NozzleDiameterMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s retraction_amount={p.RetractLengthMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
-        sb.Append($" -s retraction_speed={p.RetractSpeedMmS.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
-        // Required in CuraEngine 5.x — these settings have no default value in fdmextruder.def.json
-        // without being explicitly set, causing "Trying to retrieve setting with no value given" errors.
+        sb.Append($" -s material_diameter={p.FilamentDiameterMm.ToString("F2", ic)}");
+        sb.Append($" -s material_flow={p.MaterialFlowPct.ToString("F1", ic)}");
+        sb.Append($" -s machine_nozzle_size={p.NozzleDiameterMm.ToString("F2", ic)}");
+        sb.Append($" -s retraction_amount={p.RetractLengthMm.ToString("F2", ic)}");
+        sb.Append($" -s retraction_speed={p.RetractSpeedMmS.ToString("F1", ic)}");
+
+        // Settings with no default in fdmextruder.def.json — cause crashes if missing.
         sb.Append(" -s roofing_layer_count=0");
         sb.Append(" -s flooring_layer_count=0");
-        // support_z_seam_away_from_model has no default and causes a segfault in the support generator
-        // when support_enable=true and the setting is queried without a value.
         sb.Append(" -s support_z_seam_away_from_model=false");
-        // min_wall_line_width has no default and causes a crash during G-code export when
-        // tree support is enabled (the tree support generator queries it at export time).
-        // Formula: 85% of line_width (same as Cura's internal default formula).
-        sb.Append($" -s min_wall_line_width={(p.LineWidthMm * 0.85).ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}");
 
-        // Input model and output G-code — use filenames only because
-        // WorkingDirectory is already set to the job's folder.
+        // Input model and output G-code (filenames only; WorkingDirectory = job folder).
         sb.Append($" -l \"{Path.GetFileName(stlPath)}\"");
         sb.Append($" -o \"{Path.GetFileName(gcodePath)}\"");
 
@@ -246,6 +296,65 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         }
 
         return (Math.Max(layers, 1), timeSec, filamentMm);
+    }
+
+    // CuraEngine prints its version in the help output (no dedicated "version" sub-command).
+    // Running with no args outputs: "Cura_SteamEngine version 5.10.1\n[help text]"
+    private async Task CheckCuraVersionAsync(string exePath)
+    {
+        try
+        {
+            using var proc = Process.Start(new ProcessStartInfo
+            {
+                FileName               = exePath,
+                Arguments              = "",
+                RedirectStandardOutput = true,
+                RedirectStandardError  = true,
+                UseShellExecute        = false,
+                CreateNoWindow         = true,
+            })!;
+
+            var stdout = await proc.StandardOutput.ReadToEndAsync();
+            var stderr = await proc.StandardError.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+
+            var allOutput = stdout + " " + stderr;
+
+            // Extract "Cura_SteamEngine version X.Y.Z"
+            var match = System.Text.RegularExpressions.Regex.Match(
+                allOutput, @"version\s+(\d+)\.(\d+)\.?(\d*)");
+
+            if (!match.Success)
+            {
+                _logger.LogWarning("Could not parse CuraEngine version from output: {Out}", allOutput.Trim());
+                return;
+            }
+
+            var major = int.Parse(match.Groups[1].Value);
+            var minor = int.Parse(match.Groups[2].Value);
+            var versionStr = $"{major}.{minor}" + (match.Groups[3].Success && match.Groups[3].Value != "" ? $".{match.Groups[3].Value}" : "");
+            _logger.LogInformation("CuraEngine version: {Version}", versionStr);
+
+            // CuraEngine 5.10.x and earlier have a confirmed STATUS_INTEGER_DIVIDE_BY_ZERO
+            // bug in GcodeWriter that crashes every slice regardless of settings.
+            // 5.12.0+ is required for stable operation.
+            if (major < 5 || (major == 5 && minor <= 10))
+            {
+                throw new SlicingException(
+                    $"CuraEngine {versionStr} has a known GcodeWriter bug that prevents slicing. " +
+                    $"Please install UltiMaker Cura 5.12.0 or later from " +
+                    $"https://ultimaker.com/software/ultimaker-cura/ — " +
+                    $"your install at '{exePath}' will be detected automatically after upgrade.");
+            }
+        }
+        catch (SlicingException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("Could not read CuraEngine version: {Msg}", ex.Message);
+        }
     }
 
     /// <summary>

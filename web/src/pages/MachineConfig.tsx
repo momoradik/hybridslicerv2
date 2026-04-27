@@ -16,14 +16,14 @@ export default function MachineConfig() {
   const updateOffsetsMutation = useMutation({
     mutationFn: ({ id, offsets }: { id: string; offsets: object }) =>
       machineProfilesApi.updateOffsets(id, offsets),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['machines'] }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['machines'] }); setEditing(null) },
   })
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-semibold text-white">Machine Configuration</h2>
-        <button onClick={() => setEditing({ type: 'Hybrid', nozzleDiameterMm: 0.4, extruderCount: 1, port: 8080 })}
+        <button onClick={() => setEditing({ type: 'Hybrid', nozzleDiameterMm: 0.4, extruderCount: 1, port: 8080, bedWidthMm: 200, bedDepthMm: 200, bedHeightMm: 200, cncOffset: { x: 0, y: 0, z: 0, rotationDeg: 0 } })}
           className="px-4 py-2 bg-primary/80 hover:bg-primary text-white text-sm rounded-lg">
           + New Machine
         </button>
@@ -80,7 +80,7 @@ export default function MachineConfig() {
                       value={editing.cncOffset?.[axis] ?? 0}
                       onChange={e => setEditing({
                         ...editing,
-                        cncOffset: { ...editing.cncOffset, x: editing.cncOffset?.x ?? 0, y: editing.cncOffset?.y ?? 0, z: editing.cncOffset?.z ?? 0, rotationDeg: 0, [axis]: +e.target.value }
+                        cncOffset: { x: 0, y: 0, z: 0, rotationDeg: 0, ...editing.cncOffset, [axis]: +e.target.value }
                       })} />
                   </div>
                 ))}
@@ -94,7 +94,7 @@ export default function MachineConfig() {
                   if (editing.id) {
                     updateOffsetsMutation.mutate({
                       id: editing.id,
-                      offsets: { x: editing.cncOffset?.x ?? 0, y: editing.cncOffset?.y ?? 0, z: editing.cncOffset?.z ?? 0, rotationDeg: 0, toolOffsets: [] }
+                      offsets: { x: editing.cncOffset?.x ?? 0, y: editing.cncOffset?.y ?? 0, z: editing.cncOffset?.z ?? 0, rotationDeg: editing.cncOffset?.rotationDeg ?? 0, toolOffsets: [] }
                     })
                   } else {
                     createMutation.mutate(editing)
