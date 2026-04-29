@@ -26,6 +26,8 @@ public class PrintJob
     public string SupportPlacement { get; private set; } = "everywhere";
     public string InfillPattern { get; private set; } = "grid";
     public double? InfillDensityPct { get; private set; }
+    public string SupportInfillPattern { get; private set; } = "grid";
+    public double? SupportInfillDensityPct { get; private set; }
 
     // Generated artefact paths (relative to job storage root)
     public string? PrintGCodePath { get; private set; }
@@ -54,7 +56,9 @@ public class PrintJob
         string supportType = "normal",
         string supportPlacement = "everywhere",
         string infillPattern = "grid",
-        double? infillDensityPct = null)
+        double? infillDensityPct = null,
+        string supportInfillPattern = "grid",
+        double? supportInfillDensityPct = null)
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new DomainException("INVALID_NAME", "Job name must not be empty.");
@@ -75,6 +79,8 @@ public class PrintJob
             SupportPlacement = string.IsNullOrWhiteSpace(supportPlacement) ? "everywhere" : supportPlacement,
             InfillPattern = string.IsNullOrWhiteSpace(infillPattern) ? "grid" : infillPattern,
             InfillDensityPct = infillDensityPct is > 0 and <= 100 ? infillDensityPct : null,
+            SupportInfillPattern = string.IsNullOrWhiteSpace(supportInfillPattern) ? "grid" : supportInfillPattern,
+            SupportInfillDensityPct = supportInfillDensityPct is > 0 and <= 100 ? supportInfillDensityPct : null,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -103,7 +109,7 @@ public class PrintJob
 
     public void MarkGeneratingToolpaths()
     {
-        AssertStatus(JobStatus.SlicingComplete, JobStatus.ToolpathsComplete);
+        AssertStatus(JobStatus.SlicingComplete, JobStatus.ToolpathsComplete, JobStatus.Ready);
         Status = JobStatus.GeneratingToolpaths;
         Touch();
     }
@@ -118,7 +124,7 @@ public class PrintJob
 
     public void MarkPlanningHybrid()
     {
-        AssertStatus(JobStatus.ToolpathsComplete);
+        AssertStatus(JobStatus.ToolpathsComplete, JobStatus.Ready);
         Status = JobStatus.PlanningHybrid;
         Touch();
     }

@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { jobsApi, printProfilesApi, machineProfilesApi } from '../api/client'
+import { jobsApi, printProfilesApi, machineProfilesApi, customGCodeApi } from '../api/client'
+import DisabledHint from '../components/DisabledHint'
 import type { PrintJob } from '../types'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -168,9 +170,9 @@ function buildStages(
   return stages
 }
 
-// Speed mapping: slider 1-100 → segs/sec on log scale (10 to 10 000)
+// Speed mapping: slider 1-100 → segs/sec on log scale (~3 to ~3 000)
 function sliderToSegsPerSec(v: number): number {
-  return Math.round(Math.pow(10, 1 + (v / 100) * 3))
+  return Math.round(Math.pow(10, 0.5 + (v / 100) * 3))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -211,6 +213,7 @@ function HybridSimViewer({
   const cameraRef    = useRef<THREE.PerspectiveCamera | null>(null)
   const controlsRef  = useRef<OrbitControls | null>(null)
   const animFrameRef = useRef<number>(0)
+  const tickFrameRef = useRef<number>(0)
 
   const isPlayingRef = useRef(false)
   const stageIdxRef  = useRef(0)
@@ -226,7 +229,7 @@ function HybridSimViewer({
 
   const [stageIdx,      setStageIdx]      = useState(0)
   const [isPlaying,     setIsPlaying]     = useState(false)
-  const [speed,         setSpeed]         = useState(30)       // default mid-range slider value
+  const [speed,         setSpeed]         = useState(15)       // default low-range slider value
   const [stageProgress, setStageProgress] = useState(0)
   const [vis, setVis] = useState<Visibility>({
     part: true, support: true, cncRapid: true, cncCut: true, nozzle: true, tool: true,
@@ -361,14 +364,14 @@ function HybridSimViewer({
       const rapidGeo = new THREE.BufferGeometry()
       rapidGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(rapidPos), 3))
       rapidGeo.setDrawRange(0, 0)
-      const rapidLines = new THREE.LineSegments(rapidGeo, new THREE.LineBasicMaterial({ color: 0x00e5ff }))
+      const rapidLines = new THREE.LineSegments(rapidGeo, new THREE.LineBasicMaterial({ color: 0xffcc00 }))
       scene.add(rapidLines)
       cncRapidRef.current = rapidLines
 
       const cutGeo = new THREE.BufferGeometry()
       cutGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(cutPos), 3))
       cutGeo.setDrawRange(0, 0)
-      const cutLines = new THREE.LineSegments(cutGeo, new THREE.LineBasicMaterial({ color: 0xffcc00 }))
+      const cutLines = new THREE.LineSegments(cutGeo, new THREE.LineBasicMaterial({ color: 0x2288ff }))
       scene.add(cutLines)
       cncCutRef.current = cutLines
     }
@@ -495,11 +498,11 @@ function HybridSimViewer({
         if (np >= 1) { stageIdxRef.current = si + 1; progressRef.current = 0; setStageIdx(si + 1); setStageProgress(0) }
       }
 
-      animFrameRef.current = requestAnimationFrame(tick)
+      tickFrameRef.current = requestAnimationFrame(tick)
     }
 
-    animFrameRef.current = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(animFrameRef.current)
+    tickFrameRef.current = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(tickFrameRef.current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPlaying, parsed, layerHeightMm, vis])
 
@@ -526,6 +529,9 @@ function HybridSimViewer({
     }
     if (cncRapidRef.current) cncRapidRef.current.geometry.setDrawRange(0, maxCncMove * 2)
     if (cncCutRef.current)   cncCutRef.current.geometry.setDrawRange(0, maxCncMove * 2)
+
+    if (nozzleRef.current) nozzleRef.current.visible = false
+    if (toolRef.current)   toolRef.current.visible   = false
   }, [parsed])
 
   const stages = parsed.stages
@@ -625,8 +631,8 @@ function HybridSimViewer({
         <span className="text-[10px] text-gray-600 mr-1 shrink-0">Show/Hide:</span>
         <Toggle label="Part"        color="#2277dd" field="part"     />
         <Toggle label="Support"     color="#ff8800" field="support"  />
-        <Toggle label="CNC Rapids"  color="#00e5ff" field="cncRapid" />
-        <Toggle label="CNC Cuts"    color="#ffcc00" field="cncCut"   />
+        <Toggle label="CNC Rapids"  color="#ffcc00" field="cncRapid" />
+        <Toggle label="CNC Cuts"    color="#2288ff" field="cncCut"   />
         <Toggle label="Nozzle"      color="#ff8c00" field="nozzle"   />
         <Toggle label="CNC Tool"    color="#d8d8d8" field="tool"     />
         <span className="ml-auto text-[10px] text-gray-700 tabular-nums">
@@ -645,6 +651,7 @@ export default function HybridPreview() {
   const { data: jobs     = [] } = useQuery({ queryKey: ['jobs'],          queryFn: jobsApi.getAll })
   const { data: profiles = [] } = useQuery({ queryKey: ['printProfiles'], queryFn: printProfilesApi.getAll })
   const { data: machines = [] } = useQuery({ queryKey: ['machines'],      queryFn: machineProfilesApi.getAll })
+  const { data: gCodeBlocks = [] } = useQuery({ queryKey: ['gcode-blocks'], queryFn: customGCodeApi.getAll })
 
   const [jobId,          setJobId]          = useState('')
   const [simReady,       setSimReady]       = useState(false)
@@ -732,17 +739,34 @@ export default function HybridPreview() {
               </div>
             )}
 
+            {selectedJob && (() => {
+              const enabledCount = gCodeBlocks.filter(b => b.isEnabled).length
+              return enabledCount > 0 ? (
+                <div className="bg-blue-950/40 border border-blue-800 rounded-lg px-3 py-2 text-xs text-blue-300 flex items-center justify-between">
+                  <span>{enabledCount} G-code customisation block{enabledCount !== 1 ? 's' : ''} enabled — will be included in hybrid output</span>
+                  <Link to="/custom-gcode" className="text-blue-400 hover:text-blue-200 underline ml-2">Edit</Link>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-xs text-gray-600">
+                  <span>No G-code customisation blocks enabled.</span>
+                  <Link to="/custom-gcode" className="text-gray-500 hover:text-gray-300 underline">Add G-code customisation</Link>
+                </div>
+              )
+            })()}
+
             {error && (
               <div className="bg-red-950/40 border border-red-800 rounded-lg px-3 py-2 text-xs text-red-400">{error}</div>
             )}
 
-            <button
-              onClick={loadAndRun}
-              disabled={!jobId || loading}
-              className="px-6 py-2.5 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm transition"
-            >
-              {loading ? 'Loading G-code…' : '▶ Run Hybrid Simulation'}
-            </button>
+            <DisabledHint when={!jobId} reason="Select a job with toolpaths above to run the simulation.">
+              <button
+                onClick={loadAndRun}
+                disabled={!jobId || loading}
+                className="px-6 py-2.5 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm transition"
+              >
+                {loading ? 'Loading G-code…' : '▶ Run Hybrid Simulation'}
+              </button>
+            </DisabledHint>
           </div>
         </div>
       )}
@@ -755,9 +779,15 @@ export default function HybridPreview() {
             <span className="text-xs text-gray-600">
               {machinedLayers.length} machining stages · {selectedJob?.totalPrintLayers ?? '?'} print layers
             </span>
+            <Link
+              to="/custom-gcode"
+              className="ml-auto px-3 py-1 text-xs bg-blue-900/60 hover:bg-blue-800 text-blue-300 rounded-lg border border-blue-700 transition"
+            >
+              G-code Customisation
+            </Link>
             <button
               onClick={() => { setSimReady(false); setPrintGCode(null); setCncGCode(null) }}
-              className="ml-auto px-3 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg"
+              className="px-3 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg"
             >
               ← Back
             </button>

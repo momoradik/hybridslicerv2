@@ -119,10 +119,10 @@ function JobCard({ job, onDelete, deleting }: { job: PrintJob; onDelete: () => v
       {expanded && hasAny && (
         <div className="px-4 pb-3 pt-0 grid grid-cols-1 sm:grid-cols-3 gap-2 border-t border-gray-800">
           <SubItem
-            label="Print G-code"
+            label="Extrusion G-code"
             icon="🖨️"
-            href={`/api/jobs/${job.id}/print-gcode`}
-            filename={`${job.name}_print.gcode`}
+            href={`/api/jobs/${job.id}/print-gcode/download`}
+            filename={`${job.name}_extrusion.gcode`}
             available={hasPrint}
           />
           <SubItem

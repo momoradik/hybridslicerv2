@@ -14,6 +14,7 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
     private readonly IPrintProfileRepository _printProfiles;
     private readonly IMachineProfileRepository _machines;
     private readonly ISlicingEngine _slicer;
+    private readonly IMultiExtruderPostProcessor _multiExtruder;
     private readonly ICustomGCodeBlockRepository _customGCode;
     private readonly ILogger<SlicePrintJobHandler> _logger;
 
@@ -22,6 +23,7 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
         IPrintProfileRepository printProfiles,
         IMachineProfileRepository machines,
         ISlicingEngine slicer,
+        IMultiExtruderPostProcessor multiExtruder,
         ICustomGCodeBlockRepository customGCode,
         ILogger<SlicePrintJobHandler> logger)
     {
@@ -29,6 +31,7 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
         _printProfiles = printProfiles;
         _machines = machines;
         _slicer = slicer;
+        _multiExtruder = multiExtruder;
         _customGCode = customGCode;
         _logger = logger;
     }
@@ -71,6 +74,8 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
                 SupportEnabled:        job.SupportEnabled,
                 SupportType:           job.SupportType,
                 SupportPlacement:      job.SupportPlacement,
+                SupportInfillDensityPct: job.SupportInfillDensityPct ?? 15,
+                SupportInfillPattern:  string.IsNullOrWhiteSpace(job.SupportInfillPattern) ? "grid" : job.SupportInfillPattern,
                 CoolingEnabled:        profile.CoolingEnabled,
                 CoolingFanSpeedPct:    profile.CoolingFanSpeedPct,
                 FilamentDiameterMm:    profile.PelletModeEnabled
@@ -79,10 +84,18 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
                 BedWidthMm:            machine.BedWidthMm,
                 BedDepthMm:            machine.BedDepthMm,
                 BedHeightMm:           machine.BedHeightMm,
-                NozzleDiameterMm:      profile.NozzleDiameterMm > 0 ? profile.NozzleDiameterMm : machine.NozzleDiameterMm,
+                NozzleDiameterMm:      profile.NozzleDiameterMm > 0 ? profile.NozzleDiameterMm : 0.4,
+                // Internal pipeline always uses bed-centre origin for STL viewer / preview consistency.
+                // OriginMode in the machine profile is for documentation and future firmware output.
+                OriginIsBedCenter:     true,
                 MaterialFlowPct:       profile.MaterialFlowPct);
 
             var result = await _slicer.SliceAsync(job.StlFilePath, parameters, ct);
+
+            // Multi-extruder post-processing: insert tool changes, apply nozzle offsets,
+            // and inject per-extruder custom G-code blocks. No-op for single-extruder.
+            var enabledBlocks = await _customGCode.GetEnabledAsync(ct);
+            await _multiExtruder.ProcessAsync(result.GCodeFilePath, machine, enabledBlocks, ct);
 
             await InjectCustomGCodeAsync(result.GCodeFilePath, ct);
 

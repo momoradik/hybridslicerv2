@@ -27,6 +27,7 @@ public sealed class AppDbContext : DbContext
             e.HasKey(x => x.Id);
             e.Property(x => x.Name).HasMaxLength(200).IsRequired();
             e.Property(x => x.Type).HasConversion<string>();
+            e.Property(x => x.OriginMode).HasConversion<string>().HasDefaultValue(HybridSlicer.Domain.ValueObjects.OriginMode.BedCenter);
             e.Property(x => x.Version).HasMaxLength(20);
             e.HasQueryFilter(x => !x.IsDeleted);
 
@@ -41,6 +42,26 @@ public sealed class AppDbContext : DbContext
 
             // ToolOffsets stored as JSON column (SQLite / PG)
             e.OwnsMany(x => x.ToolOffsets, o =>
+            {
+                o.ToJson();
+            });
+
+            // Nozzle X offsets stored as JSON string
+            e.Property(x => x.NozzleXOffsetsJson)
+                .HasColumnName("NozzleXOffsets")
+                .HasColumnType("TEXT")
+                .HasDefaultValue("[]");
+            e.Ignore(x => x.NozzleXOffsets);
+
+            // Nozzle Y offsets stored as JSON string
+            e.Property(x => x.NozzleYOffsetsJson)
+                .HasColumnName("NozzleYOffsets")
+                .HasColumnType("TEXT")
+                .HasDefaultValue("[]");
+            e.Ignore(x => x.NozzleYOffsets);
+
+            // Extruder assignments stored as JSON
+            e.OwnsMany(x => x.ExtruderAssignments, o =>
             {
                 o.ToJson();
             });

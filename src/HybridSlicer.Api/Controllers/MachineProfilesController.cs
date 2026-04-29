@@ -31,10 +31,31 @@ public sealed class MachineProfilesController : ControllerBase
         var profile = MachineProfile.Create(
             req.Name, req.Type,
             req.BedWidthMm, req.BedDepthMm, req.BedHeightMm,
-            req.NozzleDiameterMm, req.ExtruderCount);
+            req.ExtruderCount);
+
+        if (req.TravelXMm.HasValue && req.TravelYMm.HasValue && req.TravelZMm.HasValue)
+            profile.SetTravel(req.TravelXMm.Value, req.TravelYMm.Value, req.TravelZMm.Value);
+
+        if (req.OriginMode is not null && Enum.TryParse<OriginMode>(req.OriginMode, true, out var om))
+            profile.SetOriginMode(om);
+
+        if (req.BedPositionXMm.HasValue || req.BedPositionYMm.HasValue)
+            profile.SetBedPosition(req.BedPositionXMm ?? 0, req.BedPositionYMm ?? 0);
 
         if (req.IpAddress is not null)
             profile.SetNetworkEndpoint(req.IpAddress, req.Port);
+
+        if (req.NozzleXOffsets is not null)
+            profile.SetNozzleXOffsets(req.NozzleXOffsets);
+        if (req.NozzleYOffsets is not null)
+            profile.SetNozzleYOffsets(req.NozzleYOffsets);
+
+        profile.SetBedEdgeOffsets(req.LeftBedEdgeOffsetMm, req.RightBedEdgeOffsetMm,
+            req.FrontBedEdgeOffsetMm, req.BackBedEdgeOffsetMm);
+
+        if (req.ExtruderAssignments is not null)
+            profile.SetExtruderAssignments(
+                req.ExtruderAssignments.Select(a => new ExtruderAssignment(a.ExtruderIndex, a.Duty)).ToList());
 
         await _repo.AddAsync(profile, ct);
         return CreatedAtAction(nameof(GetById), new { id = profile.Id }, profile);
@@ -47,6 +68,54 @@ public sealed class MachineProfilesController : ControllerBase
         if (profile is null) return NotFound();
 
         if (req.Name is not null) profile.Rename(req.Name);
+
+        if (req.TravelXMm.HasValue || req.TravelYMm.HasValue || req.TravelZMm.HasValue)
+            profile.SetTravel(
+                req.TravelXMm ?? profile.TravelXMm,
+                req.TravelYMm ?? profile.TravelYMm,
+                req.TravelZMm ?? profile.TravelZMm);
+
+        if (req.OriginMode is not null && Enum.TryParse<OriginMode>(req.OriginMode, true, out var om))
+            profile.SetOriginMode(om);
+
+        if (req.BedPositionXMm.HasValue || req.BedPositionYMm.HasValue)
+            profile.SetBedPosition(
+                req.BedPositionXMm ?? profile.BedPositionXMm,
+                req.BedPositionYMm ?? profile.BedPositionYMm);
+
+        if (req.BedWidthMm.HasValue || req.BedDepthMm.HasValue || req.BedHeightMm.HasValue)
+            profile.UpdateBedDimensions(
+                req.BedWidthMm ?? profile.BedWidthMm,
+                req.BedDepthMm ?? profile.BedDepthMm,
+                req.BedHeightMm ?? profile.BedHeightMm);
+
+        if (req.ExtruderCount.HasValue)
+            profile.SetExtruderCount(req.ExtruderCount.Value);
+
+        if (req.NozzleXOffsets is not null)
+            profile.SetNozzleXOffsets(req.NozzleXOffsets);
+        if (req.NozzleYOffsets is not null)
+            profile.SetNozzleYOffsets(req.NozzleYOffsets);
+
+        if (req.LeftBedEdgeOffsetMm.HasValue || req.RightBedEdgeOffsetMm.HasValue
+            || req.FrontBedEdgeOffsetMm.HasValue || req.BackBedEdgeOffsetMm.HasValue)
+            profile.SetBedEdgeOffsets(
+                req.LeftBedEdgeOffsetMm ?? profile.LeftBedEdgeOffsetMm,
+                req.RightBedEdgeOffsetMm ?? profile.RightBedEdgeOffsetMm,
+                req.FrontBedEdgeOffsetMm ?? profile.FrontBedEdgeOffsetMm,
+                req.BackBedEdgeOffsetMm ?? profile.BackBedEdgeOffsetMm);
+
+        if (req.ExtruderAssignments is not null)
+            profile.SetExtruderAssignments(
+                req.ExtruderAssignments.Select(a => new ExtruderAssignment(a.ExtruderIndex, a.Duty)).ToList());
+
+        if (req.IpAddress is not null)
+        {
+            if (string.IsNullOrWhiteSpace(req.IpAddress))
+                profile.ClearNetworkEndpoint();
+            else
+                profile.SetNetworkEndpoint(req.IpAddress, req.Port ?? profile.Port);
+        }
 
         if (req.CncOffset is not null)
             profile.UpdateCncOffset(new MachineOffset(
@@ -92,13 +161,44 @@ public record CreateMachineProfileRequest(
     double BedWidthMm,
     double BedDepthMm,
     double BedHeightMm,
-    double NozzleDiameterMm = 0.4,
     int ExtruderCount = 1,
+    double? TravelXMm = null,
+    double? TravelYMm = null,
+    double? TravelZMm = null,
+    string? OriginMode = null,
+    double? BedPositionXMm = null,
+    double? BedPositionYMm = null,
+    IReadOnlyList<double>? NozzleXOffsets = null,
+    IReadOnlyList<double>? NozzleYOffsets = null,
+    double LeftBedEdgeOffsetMm = 0,
+    double RightBedEdgeOffsetMm = 0,
+    double FrontBedEdgeOffsetMm = 0,
+    double BackBedEdgeOffsetMm = 0,
+    IReadOnlyList<ExtruderAssignmentDto>? ExtruderAssignments = null,
     string? IpAddress = null,
     int Port = 8080);
 
 public record UpdateMachineProfileRequest(
     string? Name = null,
+    double? BedWidthMm = null,
+    double? BedDepthMm = null,
+    double? BedHeightMm = null,
+    int? ExtruderCount = null,
+    double? TravelXMm = null,
+    double? TravelYMm = null,
+    double? TravelZMm = null,
+    string? OriginMode = null,
+    double? BedPositionXMm = null,
+    double? BedPositionYMm = null,
+    IReadOnlyList<double>? NozzleXOffsets = null,
+    IReadOnlyList<double>? NozzleYOffsets = null,
+    double? LeftBedEdgeOffsetMm = null,
+    double? RightBedEdgeOffsetMm = null,
+    double? FrontBedEdgeOffsetMm = null,
+    double? BackBedEdgeOffsetMm = null,
+    IReadOnlyList<ExtruderAssignmentDto>? ExtruderAssignments = null,
+    string? IpAddress = null,
+    int? Port = null,
     OffsetDto? CncOffset = null,
     double? SafeClearanceHeightMm = null);
 
@@ -109,3 +209,4 @@ public record UpdateOffsetsRequest(
 public record OffsetDto(double X, double Y, double Z, double RotationDeg = 0);
 public record ToolOffsetDto(int ToolIndex, double LengthOffsetMm, double RadiusOffsetMm,
     double OffsetX = 0, double OffsetY = 0, double OffsetZ = 0, string? Description = null);
+public record ExtruderAssignmentDto(int ExtruderIndex, string Duty);

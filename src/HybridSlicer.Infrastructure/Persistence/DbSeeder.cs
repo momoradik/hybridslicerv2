@@ -49,7 +49,6 @@ public static class DbSeeder
             bedWidth:       440,
             bedDepth:       290,
             bedHeight:      350,
-            nozzleDiameter: 0.4,
             extruderCount:  1);
 
         profile.SetNetworkEndpoint("192.168.1.100", 8080);

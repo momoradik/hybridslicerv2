@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard'
 import StlImport from './pages/StlImport'
 import PrintSettings from './pages/PrintSettings'
 import MachineConfig from './pages/MachineConfig'
+import Materials from './pages/Materials'
 import ToolLibrary from './pages/ToolLibrary'
 import HybridPlanner from './pages/HybridPlanner'
 import HybridPreview from './pages/HybridPreview'
@@ -31,6 +32,7 @@ export default function App() {
             <Route path="import"             element={<StlImport />} />
             <Route path="print-settings"     element={<PrintSettings />} />
             <Route path="machine-config"     element={<MachineConfig />} />
+            <Route path="materials"          element={<Materials />} />
             <Route path="tools"              element={<ToolLibrary />} />
             <Route path="hybrid-planner"     element={<HybridPlanner />} />
             <Route path="hybrid-preview"     element={<HybridPreview />} />

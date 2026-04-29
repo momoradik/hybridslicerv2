@@ -38,9 +38,9 @@ public sealed class PlanHybridProcessHandler : IRequestHandler<PlanHybridProcess
         var job = await _jobs.GetByIdAsync(cmd.JobId, ct)
             ?? throw new DomainException("JOB_NOT_FOUND", $"Job {cmd.JobId} not found.");
 
-        if (job.Status != JobStatus.ToolpathsComplete)
+        if (job.Status != JobStatus.ToolpathsComplete && job.Status != JobStatus.Ready)
             throw new DomainException("INVALID_STATE",
-                $"Job must be in ToolpathsComplete state (current: {job.Status}).");
+                $"Job must be in ToolpathsComplete or Ready state (current: {job.Status}).");
 
         if (job.PrintGCodePath is null || job.TotalPrintLayers is null)
             throw new DomainException("MISSING_DATA", "Job has no sliced G-code. Run slice first.");

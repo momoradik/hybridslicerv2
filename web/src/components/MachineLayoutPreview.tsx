@@ -1,0 +1,361 @@
+import { useRef, useCallback } from 'react'
+import type { ExtruderAssignment, OriginMode } from '../types'
+
+const NOZZLE_COLORS = ['#3b82f6', '#f97316', '#a78bfa', '#10b981', '#f43f5e', '#eab308', '#06b6d4', '#ec4899']
+const DUTY_SHORT: Record<string, string> = { Walls: 'W', Infill: 'I', Support: 'S', All: '*' }
+
+interface Props {
+  travelX: number
+  travelY: number
+  originMode: OriginMode
+  bedWidth: number
+  bedDepth: number
+  bedPositionX: number
+  bedPositionY: number
+  extruderCount: number
+  nozzleXOffsets: number[]
+  nozzleYOffsets: number[]
+  leftEdge: number
+  rightEdge: number
+  frontEdge: number
+  backEdge: number
+  extruderAssignments: ExtruderAssignment[]
+  highlight?: string | null
+  // Callbacks for interactive editing
+  onBedPositionChange?: (x: number, y: number) => void
+  onBedSizeChange?: (w: number, d: number) => void
+  onNozzleOffsetChange?: (index: number, dx: number, dy: number) => void
+}
+
+export default function MachineLayoutPreview({
+  travelX, travelY, originMode: _om, bedWidth, bedDepth, bedPositionX, bedPositionY,
+  extruderCount, nozzleXOffsets, nozzleYOffsets,
+  leftEdge, rightEdge, frontEdge, backEdge: _be,
+  extruderAssignments, highlight,
+  onBedPositionChange, onBedSizeChange, onNozzleOffsetChange,
+}: Props) {
+  const svgRef = useRef<SVGSVGElement>(null)
+  const dragRef = useRef<{
+    type: 'bed' | 'bedRight' | 'bedBottom' | 'bedCorner' | `nozzle-${number}`
+    startMmX: number; startMmY: number
+    startSvgX: number; startSvgY: number
+  } | null>(null)
+
+  // ── Layout math ─────────────────────────────────────────────────────────
+  const W = 520, H = 360
+  const pad = { top: 30, bottom: 44, left: 44, right: 44 }
+  const mL = pad.left, mR = W - pad.right, mT = pad.top, mB = H - pad.bottom
+  const mW = mR - mL, mH = mB - mT
+
+  const scaleX = travelX > 0 ? mW / travelX : 1
+  const scaleY = travelY > 0 ? mH / travelY : 1
+  const scale = Math.min(scaleX, scaleY)
+  const usedW = travelX * scale, usedH = travelY * scale
+  const offX = mL + (mW - usedW) / 2
+  const offY = mT + (mH - usedH) / 2
+
+  const bedSvgX = offX + bedPositionX * scale
+  const bedSvgY = offY + bedPositionY * scale
+  const bedSvgW = bedWidth * scale
+  const bedSvgH = bedDepth * scale
+
+  // Origin
+  const originSvgX = bedSvgX + bedSvgW / 2
+  const originSvgY = bedSvgY + bedSvgH / 2
+
+  // Extruder positions
+  const extPosXmm: number[] = [frontEdge]
+  const extPosYmm: number[] = [leftEdge]
+  for (let i = 0; i < extruderCount - 1; i++) {
+    extPosXmm.push(extPosXmm[extPosXmm.length - 1] + (nozzleXOffsets[i] ?? 0))
+    extPosYmm.push(extPosYmm[extPosYmm.length - 1] + (nozzleYOffsets[i] ?? 0))
+  }
+  const extSvg = extPosXmm.map((xmm, i) => ({
+    x: bedSvgX + extPosYmm[i] * (bedSvgW / (bedWidth || 1)),
+    y: bedSvgY + bedSvgH - xmm * (bedSvgH / (bedDepth || 1)),
+  }))
+
+  const getDuty = (i: number) => {
+    const a = extruderAssignments.find(a => a.extruderIndex === i)
+    return a ? (DUTY_SHORT[a.duty] ?? a.duty[0]) : '?'
+  }
+
+  // ── SVG coordinate conversion ───────────────────────────────────────────
+  const svgPoint = useCallback((clientX: number, clientY: number) => {
+    const svg = svgRef.current
+    if (!svg) return { x: 0, y: 0 }
+    const pt = svg.createSVGPoint()
+    pt.x = clientX; pt.y = clientY
+    const svgP = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+    return { x: svgP.x, y: svgP.y }
+  }, [])
+
+  // svgToMm helpers kept for potential future use
+  void _om; void _be; // suppress unused warnings for forwarded-but-unused props
+
+  // ── Drag handlers ───────────────────────────────────────────────────────
+  const onPointerDown = useCallback((
+    e: React.PointerEvent,
+    type: NonNullable<typeof dragRef.current>['type'],
+    startMmX: number, startMmY: number,
+  ) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const svg = svgRef.current
+    if (!svg) return
+    ;(e.target as Element).setPointerCapture(e.pointerId)
+    const p = svgPoint(e.clientX, e.clientY)
+    dragRef.current = { type, startMmX, startMmY, startSvgX: p.x, startSvgY: p.y }
+  }, [svgPoint])
+
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    const d = dragRef.current
+    if (!d) return
+    const p = svgPoint(e.clientX, e.clientY)
+    const dxSvg = p.x - d.startSvgX, dySvg = p.y - d.startSvgY
+    const dxMm = dxSvg / scale, dyMm = dySvg / scale
+
+    if (d.type === 'bed' && onBedPositionChange) {
+      const nx = Math.max(0, Math.min(travelX - bedWidth, d.startMmX + dxMm))
+      const ny = Math.max(0, Math.min(travelY - bedDepth, d.startMmY + dyMm))
+      onBedPositionChange(Math.round(nx * 10) / 10, Math.round(ny * 10) / 10)
+    } else if (d.type === 'bedRight' && onBedSizeChange) {
+      const nw = Math.max(10, Math.min(travelX - bedPositionX, d.startMmX + dxMm))
+      onBedSizeChange(Math.round(nw * 10) / 10, bedDepth)
+    } else if (d.type === 'bedBottom' && onBedSizeChange) {
+      const nd = Math.max(10, Math.min(travelY - bedPositionY, d.startMmY + dyMm))
+      onBedSizeChange(bedWidth, Math.round(nd * 10) / 10)
+    } else if (d.type === 'bedCorner' && onBedSizeChange) {
+      const nw = Math.max(10, Math.min(travelX - bedPositionX, d.startMmX + dxMm))
+      const nd = Math.max(10, Math.min(travelY - bedPositionY, d.startMmY + dyMm))
+      onBedSizeChange(Math.round(nw * 10) / 10, Math.round(nd * 10) / 10)
+    } else if (d.type.startsWith('nozzle-') && onNozzleOffsetChange) {
+      const idx = parseInt(d.type.split('-')[1])
+      // For E0: move changes bed-edge offsets conceptually, skip for now
+      // For E1+: adjust offset relative to previous nozzle
+      if (idx > 0) {
+        const newY = d.startMmX + dxMm  // SVG horizontal = mm Y
+        const newX = d.startMmY - dyMm  // SVG vertical inverted = mm X
+        onNozzleOffsetChange(idx - 1, Math.round(newX * 10) / 10, Math.round(newY * 10) / 10)
+      }
+    }
+  }, [svgPoint, scale, travelX, travelY, bedWidth, bedDepth, bedPositionX, bedPositionY,
+      onBedPositionChange, onBedSizeChange, onNozzleOffsetChange])
+
+  const onPointerUp = useCallback(() => { dragRef.current = null }, [])
+
+  // ── Highlight ───────────────────────────────────────────────────────────
+  const hl = highlight ?? null
+  const isDragging = dragRef.current !== null
+  const opacity = (keys: string | string[]) => {
+    if (!hl) return 1
+    const arr = Array.isArray(keys) ? keys : [keys]
+    return arr.includes(hl) ? 1 : 0.2
+  }
+  const nozzleOpacity = (i: number) => {
+    if (!hl) return 1
+    if (hl === `nozzle-${i}` || hl === `nozzleX-${i}` || hl === `nozzleX-${i-1}`
+      || hl === `nozzleY-${i}` || hl === `nozzleY-${i-1}`) return 1
+    if (hl === 'bed' || hl === 'travel') return 0.6
+    return 0.25
+  }
+  const dimOpacity = (key: string) => opacity(key)
+
+  const HANDLE = 6 // resize handle radius
+
+  return (
+    <div className="bg-gray-950/60 rounded-xl border border-gray-800 p-3 space-y-1">
+      <p className="text-[10px] text-gray-500 text-center">
+        {isDragging
+          ? <span className="text-green-400">Dragging — release to set position</span>
+          : hl
+            ? <span className="text-gray-300">Highlighted: <span className="text-white font-medium">{formatHighlight(hl)}</span></span>
+            : 'Drag the bed or nozzles to reposition. Drag bed edges to resize.'}
+      </p>
+      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full select-none"
+        aria-label="Interactive machine layout"
+        onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={onPointerUp}>
+
+        {/* ── Machine travel boundary ── */}
+        <g opacity={opacity(['travel', 'bed'])}>
+          <rect x={offX} y={offY} width={usedW} height={usedH}
+            fill="none" stroke={hl === 'travel' ? '#9ca3af' : '#374151'}
+            strokeWidth={hl === 'travel' ? 2 : 1} strokeDasharray="6,4" rx="2" />
+          <text x={offX + usedW / 2} y={offY - 6} textAnchor="middle"
+            fill={hl === 'travel' ? '#e5e7eb' : '#4b5563'} fontSize="8.5"
+            fontFamily="ui-sans-serif,sans-serif">Machine: {travelX} × {travelY} mm</text>
+        </g>
+
+        {/* ── Bed / build area (draggable) ── */}
+        <g opacity={opacity(['bed', 'travel'])}>
+          <rect x={bedSvgX} y={bedSvgY} width={bedSvgW} height={bedSvgH}
+            fill="#111827" stroke={hl === 'bed' ? '#d1d5db' : '#6b7280'}
+            strokeWidth={hl === 'bed' ? 2.5 : 1.5} rx="3"
+            style={{ cursor: onBedPositionChange ? 'move' : 'default' }}
+            onPointerDown={e => onPointerDown(e, 'bed', bedPositionX, bedPositionY)} />
+          <text x={bedSvgX + bedSvgW / 2} y={bedSvgY + bedSvgH + 13} textAnchor="middle"
+            fill={hl === 'bed' ? '#e5e7eb' : '#9ca3af'} fontSize="9"
+            fontFamily="ui-sans-serif,sans-serif">Bed: {bedWidth} × {bedDepth} mm @ ({bedPositionX}, {bedPositionY})</text>
+        </g>
+
+        {/* ── Bed resize handles ── */}
+        {onBedSizeChange && <>
+          {/* Right edge handle */}
+          <rect x={bedSvgX + bedSvgW - HANDLE/2} y={bedSvgY + bedSvgH/2 - HANDLE}
+            width={HANDLE} height={HANDLE*2} rx="1"
+            fill="#6b7280" fillOpacity="0.6" stroke="#9ca3af" strokeWidth="0.5"
+            style={{ cursor: 'ew-resize' }}
+            onPointerDown={e => onPointerDown(e, 'bedRight', bedWidth, 0)} />
+          {/* Bottom edge handle */}
+          <rect x={bedSvgX + bedSvgW/2 - HANDLE} y={bedSvgY + bedSvgH - HANDLE/2}
+            width={HANDLE*2} height={HANDLE} rx="1"
+            fill="#6b7280" fillOpacity="0.6" stroke="#9ca3af" strokeWidth="0.5"
+            style={{ cursor: 'ns-resize' }}
+            onPointerDown={e => onPointerDown(e, 'bedBottom', 0, bedDepth)} />
+          {/* Corner handle */}
+          <rect x={bedSvgX + bedSvgW - HANDLE} y={bedSvgY + bedSvgH - HANDLE}
+            width={HANDLE} height={HANDLE} rx="1"
+            fill="#9ca3af" fillOpacity="0.6" stroke="#d1d5db" strokeWidth="0.5"
+            style={{ cursor: 'nwse-resize' }}
+            onPointerDown={e => onPointerDown(e, 'bedCorner', bedWidth, bedDepth)} />
+        </>}
+
+        {/* ── Origin marker ── */}
+        <g opacity={opacity('origin')}>
+          <circle cx={originSvgX} cy={originSvgY} r="4" fill="none" stroke="#ef4444" strokeWidth="1.5" />
+          <line x1={originSvgX - 7} y1={originSvgY} x2={originSvgX + 7} y2={originSvgY} stroke="#ef4444" strokeWidth="1" />
+          <line x1={originSvgX} y1={originSvgY - 7} x2={originSvgX} y2={originSvgY + 7} stroke="#ef4444" strokeWidth="1" />
+          <text x={originSvgX + 10} y={originSvgY - 6} fill="#ef4444" fontSize="8"
+            fontFamily="ui-sans-serif,sans-serif">(0,0)</text>
+        </g>
+
+        {/* ── Axis arrows ── */}
+        <g opacity={opacity('origin')}>
+          <line x1={originSvgX} y1={originSvgY} x2={originSvgX + 30} y2={originSvgY}
+            stroke="#22c55e" strokeWidth="1.2" markerEnd="url(#arrowG)" />
+          <text x={originSvgX + 34} y={originSvgY + 3} fill="#22c55e" fontSize="7.5"
+            fontFamily="ui-sans-serif,sans-serif">+Y</text>
+          <line x1={originSvgX} y1={originSvgY} x2={originSvgX} y2={originSvgY - 30}
+            stroke="#3b82f6" strokeWidth="1.2" markerEnd="url(#arrowB)" />
+          <text x={originSvgX + 4} y={originSvgY - 32} fill="#3b82f6" fontSize="7.5"
+            fontFamily="ui-sans-serif,sans-serif">+X</text>
+        </g>
+        <defs>
+          <marker id="arrowG" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#22c55e" />
+          </marker>
+          <marker id="arrowB" markerWidth="6" markerHeight="6" refX="3" refY="5" orient="auto">
+            <path d="M0,6 L3,0 L6,6 Z" fill="#3b82f6" />
+          </marker>
+        </defs>
+
+        {/* ── Bed center ── */}
+        <circle cx={originSvgX} cy={originSvgY} r="2" fill="#6b7280" />
+
+        {/* ── Bed edge dimensions ── */}
+        {leftEdge > 0 && extSvg.length > 0 && (
+          <g opacity={dimOpacity('leftEdge')}>
+            <line x1={bedSvgX} y1={extSvg[0].y} x2={extSvg[0].x} y2={extSvg[0].y}
+              stroke="#f59e0b" strokeWidth="1" strokeDasharray="3,2" />
+            <text x={(bedSvgX + extSvg[0].x) / 2} y={extSvg[0].y - 4} textAnchor="middle"
+              fill="#f59e0b" fontSize="8" fontFamily="ui-sans-serif,sans-serif">{leftEdge}</text>
+          </g>
+        )}
+        {rightEdge > 0 && extSvg.length > 0 && (
+          <g opacity={dimOpacity('rightEdge')}>
+            <line x1={extSvg[extSvg.length-1].x} y1={extSvg[extSvg.length-1].y}
+              x2={bedSvgX + bedSvgW} y2={extSvg[extSvg.length-1].y}
+              stroke="#f59e0b" strokeWidth="1" strokeDasharray="3,2" />
+            <text x={(extSvg[extSvg.length-1].x + bedSvgX + bedSvgW) / 2} y={extSvg[extSvg.length-1].y - 4}
+              textAnchor="middle" fill="#f59e0b" fontSize="8" fontFamily="ui-sans-serif,sans-serif">{rightEdge}</text>
+          </g>
+        )}
+
+        {/* ── Nozzle spacing ── */}
+        {extruderCount > 1 && nozzleYOffsets.map((v, i) => {
+          if (i >= extruderCount - 1) return null
+          const y = Math.min(extSvg[i].y, extSvg[i+1].y) + 14 + i * 10
+          return (
+            <g key={`ny${i}`} opacity={dimOpacity(`nozzleY-${i}`)}>
+              <line x1={extSvg[i].x} y1={y} x2={extSvg[i+1].x} y2={y}
+                stroke="#8b5cf6" strokeWidth="1" strokeDasharray="3,2" />
+              <text x={(extSvg[i].x + extSvg[i+1].x) / 2} y={y - 3} textAnchor="middle"
+                fill="#8b5cf6" fontSize="7.5" fontFamily="ui-sans-serif,sans-serif">
+                {v > 0 ? `Y${v}` : '—'}
+              </text>
+            </g>
+          )
+        })}
+        {extruderCount > 1 && nozzleXOffsets.map((v, i) => {
+          if (i >= extruderCount - 1 || v === 0) return null
+          const x = Math.max(extSvg[i].x, extSvg[i+1].x) + 12 + i * 10
+          return (
+            <g key={`nx${i}`} opacity={dimOpacity(`nozzleX-${i}`)}>
+              <line x1={x} y1={extSvg[i].y} x2={x} y2={extSvg[i+1].y}
+                stroke="#8b5cf6" strokeWidth="1" strokeDasharray="3,2" />
+              <text x={x + 5} y={(extSvg[i].y + extSvg[i+1].y) / 2 + 3}
+                fill="#8b5cf6" fontSize="7.5" fontFamily="ui-sans-serif,sans-serif">X{v}</text>
+            </g>
+          )
+        })}
+
+        {/* ── Extruder markers (draggable for E1+) ── */}
+        {extSvg.map((pos, i) => (
+          <g key={i} opacity={nozzleOpacity(i)}
+            style={{ cursor: i > 0 && onNozzleOffsetChange ? 'grab' : 'default' }}
+            onPointerDown={i > 0 ? e => onPointerDown(e, `nozzle-${i}`, nozzleYOffsets[i-1] ?? 0, nozzleXOffsets[i-1] ?? 0) : undefined}>
+            <circle cx={pos.x} cy={pos.y} r={i > 0 && onNozzleOffsetChange ? 10 : 7}
+              fill={NOZZLE_COLORS[i % NOZZLE_COLORS.length]} fillOpacity="0.15"
+              stroke={NOZZLE_COLORS[i % NOZZLE_COLORS.length]} strokeWidth="1.5" />
+            <circle cx={pos.x} cy={pos.y} r="2.5"
+              fill={NOZZLE_COLORS[i % NOZZLE_COLORS.length]} />
+            <text x={pos.x} y={pos.y - 14} textAnchor="middle"
+              fill={NOZZLE_COLORS[i % NOZZLE_COLORS.length]} fontSize="8.5" fontWeight="600"
+              fontFamily="ui-sans-serif,sans-serif">E{i + 1}</text>
+            <text x={pos.x} y={pos.y + 18} textAnchor="middle"
+              fill={NOZZLE_COLORS[i % NOZZLE_COLORS.length]} fontSize="7" fontWeight="500"
+              fontFamily="ui-sans-serif,sans-serif">{getDuty(i)}</text>
+          </g>
+        ))}
+      </svg>
+
+      {/* ── Legend ── */}
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] justify-center pt-1">
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-3 h-3 rounded border border-gray-600" style={{ borderStyle: 'dashed' }} />
+          <span className="text-gray-500">Machine travel</span>
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-3 h-3 rounded bg-gray-900 border border-gray-500" />
+          <span className="text-gray-400">Bed (drag to move)</span>
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-2.5 h-2.5 rounded-full border-2 border-red-500" />
+          <span className="text-red-400">(0,0)</span>
+        </span>
+        {extruderCount > 0 && Array.from({ length: extruderCount }, (_, i) => (
+          <span key={i} className="flex items-center gap-1">
+            <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: NOZZLE_COLORS[i % NOZZLE_COLORS.length] }} />
+            <span style={{ color: NOZZLE_COLORS[i % NOZZLE_COLORS.length] }}>
+              E{i + 1}{i > 0 ? ' (drag)' : ''}={extruderAssignments.find(a => a.extruderIndex === i)?.duty ?? 'All'}
+            </span>
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function formatHighlight(key: string): string {
+  if (key === 'travel')    return 'Machine travel'
+  if (key === 'origin')    return 'Machine zero (0,0)'
+  if (key === 'bed')       return 'Bed / build area'
+  if (key === 'leftEdge')  return 'Left bed edge (Y)'
+  if (key === 'rightEdge') return 'Right bed edge (Y)'
+  if (key === 'frontEdge') return 'Front bed edge (X)'
+  if (key === 'backEdge')  return 'Back bed edge (X)'
+  if (key.startsWith('nozzleY-')) { const i = +key.split('-')[1]; return `Nozzle Y: E${i+1}→E${i+2}` }
+  if (key.startsWith('nozzleX-')) { const i = +key.split('-')[1]; return `Nozzle X: E${i+1}→E${i+2}` }
+  if (key.startsWith('nozzle-'))  { const i = +key.split('-')[1]; return `Extruder ${i+1}` }
+  return key
+}

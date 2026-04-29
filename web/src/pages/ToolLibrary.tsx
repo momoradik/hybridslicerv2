@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toolsApi } from '../api/client'
+import DisabledHint from '../components/DisabledHint'
 import type { CncTool, ToolType } from '../types'
 
 const TOOL_TYPES: ToolType[] = ['FlatEndMill', 'BallEndMill', 'BullNoseEndMill', 'DrillBit', 'Engraver', 'Facemill', 'Custom']
@@ -322,13 +323,19 @@ export default function ToolLibrary() {
                 className="px-4 py-2 bg-gray-800 text-gray-300 rounded-lg text-sm hover:bg-gray-700 transition">
                 Cancel
               </button>
-              <button
-                onClick={() => createMutation.mutate(editing)}
-                disabled={!editing.name || !editing.diameterMm || fluteExceedsLength}
-                className="px-5 py-2 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm transition"
-              >
-                Save Tool
-              </button>
+              <DisabledHint when={!editing.name || !editing.diameterMm || fluteExceedsLength} reason={
+                !editing.name ? 'Enter a tool name.' :
+                !editing.diameterMm ? 'Enter a tool diameter.' :
+                'Flute length cannot exceed overall tool length.'
+              }>
+                <button
+                  onClick={() => createMutation.mutate(editing)}
+                  disabled={!editing.name || !editing.diameterMm || fluteExceedsLength}
+                  className="px-5 py-2 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm transition"
+                >
+                  Save Tool
+                </button>
+              </DisabledHint>
             </div>
           </div>
         </div>

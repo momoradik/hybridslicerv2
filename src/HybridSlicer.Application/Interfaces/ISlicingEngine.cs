@@ -51,6 +51,8 @@ public sealed record SlicingParameters(
     bool SupportEnabled,
     string SupportType,
     string SupportPlacement,
+    double SupportInfillDensityPct,
+    string SupportInfillPattern,
 
     // Cooling
     bool CoolingEnabled,
@@ -64,6 +66,9 @@ public sealed record SlicingParameters(
     double BedDepthMm,
     double BedHeightMm,
     double NozzleDiameterMm,
+
+    // Origin
+    bool OriginIsBedCenter = true,
 
     // Extrusion
     double MaterialFlowPct = 100.0);

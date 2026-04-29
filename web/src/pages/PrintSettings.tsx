@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { printProfilesApi } from '../api/client'
+import DisabledHint from '../components/DisabledHint'
 import type { PrintProfile } from '../types'
 
 // ── Cura-derived "Auto" defaults ────────────────────────────────────────────
@@ -187,7 +188,7 @@ export default function PrintSettings() {
               <Section title="Basic Settings"
                 subtitle="These four settings directly drive Cura and affect every print">
                 <div className="grid grid-cols-2 gap-4">
-                  <F label="Nozzle Diameter (mm)" hint="machine_nozzle_size — 0 = use machine profile">
+                  <F label="Nozzle Diameter (mm)" hint="machine_nozzle_size — 0 = use machine default">
                     <WithAuto onAuto={() => { /* nozzle is the source of truth, no auto */ }}>
                       <NumIn value={draft.nozzleDiameterMm ?? 0.4} min={0} max={5} step={0.05}
                         onChange={v => set('nozzleDiameterMm', v)} />
@@ -386,21 +387,23 @@ export default function PrintSettings() {
             <div className="sticky bottom-0 bg-gray-900 border-t border-gray-800 px-6 py-4 flex justify-between items-center">
               <div className="text-xs text-gray-600">
                 {draft.nozzleDiameterMm && draft.nozzleDiameterMm > 0
-                  ? `Nozzle Ø${draft.nozzleDiameterMm} mm overrides machine profile for slicing`
-                  : 'Nozzle = 0: uses machine profile nozzle diameter for slicing'}
+                  ? `Nozzle Ø${draft.nozzleDiameterMm} mm overrides machine default for slicing`
+                  : 'Nozzle = 0: uses machine default nozzle diameter for slicing'}
               </div>
               <div className="flex gap-3">
                 <button onClick={() => setDraft(null)}
                   className="px-4 py-2 bg-gray-800 text-gray-300 rounded-lg text-sm">
                   Cancel
                 </button>
-                <button
-                  onClick={save}
-                  disabled={!draft.name.trim() || createMutation.isPending || updateMutation.isPending}
-                  className="px-4 py-2 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm"
-                >
-                  {(createMutation.isPending || updateMutation.isPending) ? 'Saving…' : 'Save Profile'}
-                </button>
+                <DisabledHint when={!draft.name.trim()} reason="Enter a profile name to save.">
+                  <button
+                    onClick={save}
+                    disabled={!draft.name.trim() || createMutation.isPending || updateMutation.isPending}
+                    className="px-4 py-2 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm"
+                  >
+                    {(createMutation.isPending || updateMutation.isPending) ? 'Saving…' : 'Save Profile'}
+                  </button>
+                </DisabledHint>
               </div>
             </div>
           </div>

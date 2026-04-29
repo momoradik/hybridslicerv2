@@ -5,23 +5,55 @@ export type JobStatus =
 
 export type MachineType = 'FDM' | 'CNC' | 'Hybrid'
 export type ToolType = 'FlatEndMill' | 'BallEndMill' | 'BullNoseEndMill' | 'DrillBit' | 'Engraver' | 'Facemill' | 'Custom'
-export type GCodeTrigger = 'BeforeMachining' | 'AfterMachining' | 'BeforePrinting' | 'AfterPrinting' | 'JobStart' | 'JobEnd'
+export type GCodeTrigger =
+  | 'BeforeMachining' | 'AfterMachining' | 'BeforePrinting' | 'AfterPrinting' | 'JobStart' | 'JobEnd'
+  | 'BeforeExtruder0' | 'BeforeExtruder1' | 'BeforeExtruder2' | 'BeforeExtruder3'
+  | 'BeforeExtruder4' | 'BeforeExtruder5' | 'BeforeExtruder6' | 'BeforeExtruder7'
+  | 'AfterExtruder0' | 'AfterExtruder1' | 'AfterExtruder2' | 'AfterExtruder3'
+  | 'AfterExtruder4' | 'AfterExtruder5' | 'AfterExtruder6' | 'AfterExtruder7'
+
+export type OriginMode = 'BedFrontLeft' | 'BedCenter'
 
 export interface MachineProfile {
   id: string
   name: string
   type: MachineType
+  travelXMm: number
+  travelYMm: number
+  travelZMm: number
+  originMode: OriginMode
   bedWidthMm: number
   bedDepthMm: number
   bedHeightMm: number
-  nozzleDiameterMm: number
+  bedPositionXMm: number
+  bedPositionYMm: number
   extruderCount: number
+  nozzleXOffsetsJson: string
+  nozzleYOffsetsJson: string
+  leftBedEdgeOffsetMm: number
+  rightBedEdgeOffsetMm: number
+  frontBedEdgeOffsetMm: number
+  backBedEdgeOffsetMm: number
+  extruderAssignments: ExtruderAssignment[]
   ipAddress?: string
   port: number
   cncOffset: MachineOffset
   safeClearanceHeightMm: number
   version: string
 }
+
+export interface ExtruderAssignment {
+  extruderIndex: number
+  duty: string
+}
+
+export const EXTRUDER_DUTIES = [
+  'Walls',
+  'Support',
+  'Infill',
+  'All',
+] as const
+export type ExtruderDuty = (typeof EXTRUDER_DUTIES)[number]
 
 export interface MachineOffset {
   x: number

@@ -204,6 +204,9 @@ public sealed class CuraEngineAdapter : ISlicingEngine
             var placement = string.IsNullOrWhiteSpace(p.SupportPlacement) ? "everywhere" : p.SupportPlacement;
             sb.Append($" -s support_type={placement}");
             sb.Append($" -s support_structure={p.SupportType}");
+            sb.Append($" -s support_infill_rate={p.SupportInfillDensityPct.ToString("F1", ic)}");
+            if (!string.IsNullOrWhiteSpace(p.SupportInfillPattern))
+                sb.Append($" -s support_pattern={p.SupportInfillPattern}");
         }
         sb.Append($" -s cool_fan_enabled={p.CoolingEnabled.ToString().ToLowerInvariant()}");
         sb.Append($" -s cool_fan_speed={p.CoolingFanSpeedPct.ToString("F1", ic)}");
@@ -211,8 +214,8 @@ public sealed class CuraEngineAdapter : ISlicingEngine
         sb.Append($" -s machine_depth={p.BedDepthMm.ToString("F1", ic)}");
         sb.Append($" -s machine_height={p.BedHeightMm.ToString("F1", ic)}");
         sb.Append($" -s machine_nozzle_size={p.NozzleDiameterMm.ToString("F2", ic)}");
-        // Use bed-centre origin to match the STL viewer and G-code preview coordinate system.
-        sb.Append(" -s machine_center_is_zero=true");
+        // Origin mode: must match the STL viewer and G-code preview coordinate system.
+        sb.Append($" -s machine_center_is_zero={p.OriginIsBedCenter.ToString().ToLowerInvariant()}");
         sb.Append(" -s adhesion_type=none");
 
         // ── Extruder-0 settings ───────────────────────────────────────────────

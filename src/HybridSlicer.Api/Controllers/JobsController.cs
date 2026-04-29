@@ -52,7 +52,9 @@ public sealed class JobsController : ControllerBase
             SupportType: request.SupportType,
             SupportPlacement: request.SupportPlacement,
             InfillPattern: request.InfillPattern,
-            InfillDensityPct: request.InfillDensityPct), ct);
+            InfillDensityPct: request.InfillDensityPct,
+            SupportInfillPattern: request.SupportInfillPattern,
+            SupportInfillDensityPct: request.SupportInfillDensityPct), ct);
 
         return CreatedAtAction(nameof(GetById), new { id = result.JobId }, result);
     }
@@ -131,6 +133,17 @@ public sealed class JobsController : ControllerBase
         return File(stream, "text/plain");
     }
 
+    [HttpGet("{id:guid}/print-gcode/download")]
+    public async Task<IActionResult> DownloadPrintGCode(Guid id, CancellationToken ct)
+    {
+        var job = await _jobs.GetByIdAsync(id, ct);
+        if (job is null) return NotFound();
+        if (job.PrintGCodePath is null) return BadRequest("Print G-code not yet generated.");
+        if (!System.IO.File.Exists(job.PrintGCodePath)) return NotFound("G-code file not found on disk.");
+        var stream = System.IO.File.OpenRead(job.PrintGCodePath);
+        return File(stream, "application/octet-stream", $"{job.Name}_extrusion.gcode");
+    }
+
     [HttpGet("{id:guid}/gcode")]
     public async Task<IActionResult> DownloadGCode(Guid id, CancellationToken ct)
     {
@@ -172,7 +185,9 @@ public record UploadStlRequest(
     [FromForm] string SupportType = "normal",
     [FromForm] string SupportPlacement = "everywhere",
     [FromForm] string InfillPattern = "grid",
-    [FromForm] double? InfillDensityPct = 15);
+    [FromForm] double? InfillDensityPct = 15,
+    [FromForm] string SupportInfillPattern = "grid",
+    [FromForm] double? SupportInfillDensityPct = null);
 
 public record CreateJobRequest(string JobName, Guid MachineProfileId, Guid PrintProfileId, Guid MaterialId);
 public record GenerateToolpathsRequest(

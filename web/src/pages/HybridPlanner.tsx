@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { jobsApi, toolsApi } from '../api/client'
+import { jobsApi, toolsApi, machineProfilesApi } from '../api/client'
 import GCodePreview3D from '../components/viewer/GCodePreview3D'
 import CncSimulation from '../components/viewer/CncSimulation'
+import DisabledHint from '../components/DisabledHint'
 
 type Tab = 'config' | 'gcode' | 'preview3d' | 'simulation'
 
@@ -14,8 +15,9 @@ interface UnmachinableRegion {
 
 export default function HybridPlanner() {
   const qc = useQueryClient()
-  const { data: jobs  = [] } = useQuery({ queryKey: ['jobs'],  queryFn: jobsApi.getAll })
-  const { data: tools = [] } = useQuery({ queryKey: ['tools'], queryFn: toolsApi.getAll })
+  const { data: jobs      = [] } = useQuery({ queryKey: ['jobs'],     queryFn: jobsApi.getAll })
+  const { data: tools     = [] } = useQuery({ queryKey: ['tools'],    queryFn: toolsApi.getAll })
+  const { data: machines  = [] } = useQuery({ queryKey: ['machines'], queryFn: machineProfilesApi.getAll })
 
   const [jobId,                 setJobId]                 = useState('')
   const [toolId,                setToolId]                = useState('')
@@ -39,7 +41,7 @@ export default function HybridPlanner() {
   const [machinedLayers,        setMachinedLayers]        = useState<number[]>([])
   const [unmachinableRegions,   setUnmachinableRegions]   = useState<UnmachinableRegion[]>([])
 
-  const readyJobs   = jobs.filter(j => j.status === 'SlicingComplete' || j.status === 'ToolpathsComplete')
+  const readyJobs   = jobs.filter(j => j.status === 'SlicingComplete' || j.status === 'ToolpathsComplete' || j.status === 'Ready')
   const selectedJob  = jobs.find(j => j.id === jobId)
   const selectedTool = tools.find(t => t.id === toolId)
 
@@ -81,48 +83,59 @@ export default function HybridPlanner() {
     URL.revokeObjectURL(url)
   }
 
-  // Dummy build volume for the 3D preview (CNC toolpaths don't need a real bed size)
-  const buildVolume = useMemo(() => ({ width: 440, depth: 290, height: 350 }), [])
+  // Build volume from the selected job's machine profile
+  const selectedMachine = machines.find(m => m.id === selectedJob?.machineProfileId)
+  const buildVolume = useMemo(() => ({
+    width:  selectedMachine?.bedWidthMm  ?? 440,
+    depth:  selectedMachine?.bedDepthMm  ?? 290,
+    height: selectedMachine?.bedHeightMm ?? 350,
+  }), [selectedMachine?.bedWidthMm, selectedMachine?.bedDepthMm, selectedMachine?.bedHeightMm])
 
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-semibold text-white">Hybrid Process Planner</h2>
+      <h2 className="text-2xl font-semibold text-white">Hybrid Planner</h2>
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-800">
         <TabBtn active={activeTab === 'config'} onClick={() => setActiveTab('config')}>
           Configuration
         </TabBtn>
-        <TabBtn
-          active={activeTab === 'gcode'}
-          disabled={!toolpathGCode}
-          onClick={() => setActiveTab('gcode')}
-        >
-          G-code Text
-          {toolpathGCode && (
-            <span className="ml-2 px-1.5 py-0.5 text-xs bg-purple-700 rounded-full">CNC</span>
-          )}
-        </TabBtn>
-        <TabBtn
-          active={activeTab === 'preview3d'}
-          disabled={!toolpathGCode}
-          onClick={() => setActiveTab('preview3d')}
-        >
-          3D Preview
-          {toolpathGCode && (
-            <span className="ml-2 px-1.5 py-0.5 text-xs bg-cyan-700 rounded-full">NEW</span>
-          )}
-        </TabBtn>
-        <TabBtn
-          active={activeTab === 'simulation'}
-          disabled={!toolpathGCode || !printGCode}
-          onClick={() => setActiveTab('simulation')}
-        >
-          Simulation
-          {toolpathGCode && printGCode && (
-            <span className="ml-2 px-1.5 py-0.5 text-xs bg-green-700 rounded-full">SIM</span>
-          )}
-        </TabBtn>
+        <DisabledHint when={!toolpathGCode} reason="Generate toolpaths first to view the G-code.">
+          <TabBtn
+            active={activeTab === 'gcode'}
+            disabled={!toolpathGCode}
+            onClick={() => setActiveTab('gcode')}
+          >
+            G-code Text
+            {toolpathGCode && (
+              <span className="ml-2 px-1.5 py-0.5 text-xs bg-purple-700 rounded-full">CNC</span>
+            )}
+          </TabBtn>
+        </DisabledHint>
+        <DisabledHint when={!toolpathGCode} reason="Generate toolpaths first to see the 3D preview.">
+          <TabBtn
+            active={activeTab === 'preview3d'}
+            disabled={!toolpathGCode}
+            onClick={() => setActiveTab('preview3d')}
+          >
+            3D Preview
+            {toolpathGCode && (
+              <span className="ml-2 px-1.5 py-0.5 text-xs bg-cyan-700 rounded-full">NEW</span>
+            )}
+          </TabBtn>
+        </DisabledHint>
+        <DisabledHint when={!toolpathGCode || !printGCode} reason="Generate toolpaths first to run the simulation.">
+          <TabBtn
+            active={activeTab === 'simulation'}
+            disabled={!toolpathGCode || !printGCode}
+            onClick={() => setActiveTab('simulation')}
+          >
+            Simulation
+            {toolpathGCode && printGCode && (
+              <span className="ml-2 px-1.5 py-0.5 text-xs bg-green-700 rounded-full">SIM</span>
+            )}
+          </TabBtn>
+        </DisabledHint>
       </div>
 
       {activeTab === 'config' && (
@@ -364,21 +377,29 @@ export default function HybridPlanner() {
             </div>
 
             <div className="flex gap-3 pt-2">
-              <button
-                onClick={() => toolpathsMutation.mutate()}
-                disabled={!jobId || !toolId || toolpathsMutation.isPending}
-                className="flex-1 py-2 bg-purple-700 hover:bg-purple-600 disabled:opacity-40 text-white rounded-lg text-sm transition"
-              >
-                {toolpathsMutation.isPending ? 'Generating…' : '1. Generate Toolpaths'}
-              </button>
+              <DisabledHint when={!jobId || !toolId} reason={
+                !jobId ? 'Select a sliced job above.' : 'Select a CNC tool above.'
+              }>
+                <button
+                  onClick={() => toolpathsMutation.mutate()}
+                  disabled={!jobId || !toolId || toolpathsMutation.isPending}
+                  className="flex-1 py-2 bg-purple-700 hover:bg-purple-600 disabled:opacity-40 text-white rounded-lg text-sm transition"
+                >
+                  {toolpathsMutation.isPending ? 'Generating…' : '1. Generate Toolpaths'}
+                </button>
+              </DisabledHint>
 
-              <button
-                onClick={() => planMutation.mutate()}
-                disabled={!jobId || selectedJob?.status !== 'ToolpathsComplete' || planMutation.isPending}
-                className="flex-1 py-2 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm transition"
-              >
-                {planMutation.isPending ? 'Planning…' : '2. Plan Hybrid'}
-              </button>
+              <DisabledHint when={!jobId || (selectedJob?.status !== 'ToolpathsComplete' && selectedJob?.status !== 'Ready')} reason={
+                !jobId ? 'Select a job first.' : 'Generate toolpaths first (step 1), then plan hybrid.'
+              }>
+                <button
+                  onClick={() => planMutation.mutate()}
+                  disabled={!jobId || (selectedJob?.status !== 'ToolpathsComplete' && selectedJob?.status !== 'Ready') || planMutation.isPending}
+                  className="flex-1 py-2 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm transition"
+                >
+                  {planMutation.isPending ? 'Planning…' : '2. Plan Hybrid'}
+                </button>
+              </DisabledHint>
             </div>
 
             {toolpathsMutation.isError && (

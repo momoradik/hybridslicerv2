@@ -7,5 +7,22 @@ public enum GCodeTrigger
     BeforePrinting = 2,
     AfterPrinting = 3,
     JobStart = 4,
-    JobEnd = 5
+    JobEnd = 5,
+    // Per-extruder triggers (extruder index encoded in value: 100+N = before, 200+N = after)
+    BeforeExtruder0 = 100,
+    BeforeExtruder1 = 101,
+    BeforeExtruder2 = 102,
+    BeforeExtruder3 = 103,
+    BeforeExtruder4 = 104,
+    BeforeExtruder5 = 105,
+    BeforeExtruder6 = 106,
+    BeforeExtruder7 = 107,
+    AfterExtruder0 = 200,
+    AfterExtruder1 = 201,
+    AfterExtruder2 = 202,
+    AfterExtruder3 = 203,
+    AfterExtruder4 = 204,
+    AfterExtruder5 = 205,
+    AfterExtruder6 = 206,
+    AfterExtruder7 = 207,
 }

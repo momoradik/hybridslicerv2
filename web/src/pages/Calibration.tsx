@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react'
 import { useAppStore } from '../store'
 import * as signalR from '@microsoft/signalr'
+import DisabledHint from '../components/DisabledHint'
 
 export default function Calibration() {
   const { machineConnected, setMachineConnected, setMachineEndpoint } = useAppStore()
@@ -145,13 +146,15 @@ export default function Calibration() {
             onKeyDown={e => e.key === 'Enter' && sendCmd()}
             placeholder="G28 ; home all axes"
           />
-          <button
-            onClick={sendCmd}
-            disabled={!machineConnected}
-            className="px-4 py-2 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm"
-          >
-            Send
-          </button>
+          <DisabledHint when={!machineConnected} reason="Connect to a machine first using the connection panel above.">
+            <button
+              onClick={sendCmd}
+              disabled={!machineConnected}
+              className="px-4 py-2 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm"
+            >
+              Send
+            </button>
+          </DisabledHint>
         </div>
         {response && (
           <pre className="text-xs font-mono text-green-400 bg-gray-950 rounded p-3 max-h-40 overflow-y-auto">{response}</pre>
@@ -170,14 +173,15 @@ export default function Calibration() {
             ['Get Temps', 'M105'],
             ['Disable Motors', 'M84'],
           ].map(([label, cmd]) => (
-            <button
-              key={cmd}
-              disabled={!machineConnected}
-              onClick={() => { setManualCmd(cmd) }}
-              className="py-2 px-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-gray-300 rounded-lg text-sm transition"
-            >
-              {label}
-            </button>
+            <DisabledHint key={cmd} when={!machineConnected} reason="Connect to a machine first.">
+              <button
+                disabled={!machineConnected}
+                onClick={() => { setManualCmd(cmd) }}
+                className="py-2 px-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-gray-300 rounded-lg text-sm transition"
+              >
+                {label}
+              </button>
+            </DisabledHint>
           ))}
         </div>
       </div>
