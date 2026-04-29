@@ -27,6 +27,8 @@ interface MachineForm {
   bedHeightMm: number
   bedPositionXMm: number
   bedPositionYMm: number
+  originXMm: number
+  originYMm: number
   extruderCount: number
   nozzleXOffsets: number[]
   nozzleYOffsets: number[]
@@ -61,6 +63,8 @@ function machineToForm(m: MachineProfile): MachineForm {
     bedHeightMm: m.bedHeightMm,
     bedPositionXMm: m.bedPositionXMm ?? 0,
     bedPositionYMm: m.bedPositionYMm ?? 0,
+    originXMm: m.originXMm ?? 0,
+    originYMm: m.originYMm ?? 0,
     extruderCount: m.extruderCount,
     nozzleXOffsets: parseJsonArray(m.nozzleXOffsetsJson),
     nozzleYOffsets: parseJsonArray(m.nozzleYOffsetsJson),
@@ -91,6 +95,8 @@ function emptyForm(): MachineForm {
     bedHeightMm: 350,
     bedPositionXMm: 0,
     bedPositionYMm: 0,
+    originXMm: 0,
+    originYMm: 0,
     extruderCount: 1,
     nozzleXOffsets: [],
     nozzleYOffsets: [],
@@ -181,6 +187,7 @@ export default function MachineConfig() {
       originMode: form.originMode,
       bedWidthMm: form.bedWidthMm, bedDepthMm: form.bedDepthMm, bedHeightMm: form.bedHeightMm,
       bedPositionXMm: form.bedPositionXMm, bedPositionYMm: form.bedPositionYMm,
+      originXMm: form.originXMm, originYMm: form.originYMm,
       extruderCount: form.extruderCount,
       nozzleXOffsets: form.nozzleXOffsets, nozzleYOffsets: form.nozzleYOffsets,
       leftBedEdgeOffsetMm: form.leftBedEdgeOffsetMm, rightBedEdgeOffsetMm: form.rightBedEdgeOffsetMm,
@@ -305,7 +312,18 @@ export default function MachineConfig() {
                     onChange={v => set('bedPositionYMm', v)} />
                 </MField>
               </div>
-              <p className="text-xs text-gray-600">Print origin is always at bed center. The slicer uses bed-centre as (0,0).</p>
+              <p className="text-xs text-gray-500 mt-2">Machine origin (0,0) position in the travel frame.</p>
+              <div {...hField('origin')} className="grid grid-cols-2 gap-3">
+                <MField label="Origin X (mm)">
+                  <NumInput value={form.originXMm} min={0} max={5000} step={0.1}
+                    onChange={v => set('originXMm', v)} />
+                </MField>
+                <MField label="Origin Y (mm)">
+                  <NumInput value={form.originYMm} min={0} max={5000} step={0.1}
+                    onChange={v => set('originYMm', v)} />
+                </MField>
+              </div>
+              <p className="text-xs text-gray-600">Print reference is at bed center. The slicer uses bed-centre as (0,0) for G-code.</p>
             </div>
 
             {/* ── STEP 3: Extruders ── */}
@@ -333,6 +351,11 @@ export default function MachineConfig() {
                 backEdge={form.backBedEdgeOffsetMm}
                 extruderAssignments={form.extruderAssignments}
                 highlight={highlight}
+                originX={form.originXMm}
+                originY={form.originYMm}
+                isHybrid={form.type === 'Hybrid'}
+                cncOffsetX={form.cncOffsetX}
+                cncOffsetY={form.cncOffsetY}
                 onBedPositionChange={(x, y) => setForm(f => f ? { ...f, bedPositionXMm: x, bedPositionYMm: y } : f)}
                 onBedSizeChange={(w, d) => setForm(f => f ? { ...f, bedWidthMm: w, bedDepthMm: d } : f)}
                 onNozzleOffsetChange={(idx, dx, dy) => setForm(f => {
@@ -341,6 +364,9 @@ export default function MachineConfig() {
                   const yo = [...f.nozzleYOffsets]; yo[idx] = dy
                   return { ...f, nozzleXOffsets: xo, nozzleYOffsets: yo }
                 })}
+                onExtruder1PositionChange={(front, left) => setForm(f =>
+                  f ? { ...f, frontBedEdgeOffsetMm: front, leftBedEdgeOffsetMm: left } : f)}
+                onOriginChange={(x, y) => setForm(f => f ? { ...f, originXMm: x, originYMm: y } : f)}
               />
 
               {/* Nozzle Spacing (only when > 1 extruder) */}
@@ -447,20 +473,34 @@ export default function MachineConfig() {
               </div>
             </div>
 
-            {/* ── STEP 5: CNC ── */}
+            {/* ── STEP 5: CNC / Hybrid ── */}
             <div className="border-t border-gray-800 pt-3 space-y-3">
-              <h4 className="text-sm font-semibold text-white">5. CNC Offsets (mm)</h4>
-              <div className="grid grid-cols-3 gap-3">
-                <MField label="X">
-                  <NumInput value={form.cncOffsetX} step={0.01} onChange={v => set('cncOffsetX', v)} />
-                </MField>
-                <MField label="Y">
-                  <NumInput value={form.cncOffsetY} step={0.01} onChange={v => set('cncOffsetY', v)} />
-                </MField>
-                <MField label="Z">
-                  <NumInput value={form.cncOffsetZ} step={0.01} onChange={v => set('cncOffsetZ', v)} />
-                </MField>
-              </div>
+              <label className="flex items-center gap-3 cursor-pointer select-none">
+                <input type="checkbox" className="w-4 h-4 accent-primary"
+                  checked={form.type === 'Hybrid'}
+                  onChange={e => set('type', e.target.checked ? 'Hybrid' : 'FDM')} />
+                <div>
+                  <span className="text-sm font-semibold text-white">Hybrid Machine (FDM + CNC)</span>
+                  <p className="text-xs text-gray-500">Enable CNC spindle mapping for hybrid manufacturing</p>
+                </div>
+              </label>
+
+              {form.type === 'Hybrid' && (
+                <div className="space-y-3 ml-7">
+                  <p className="text-xs text-gray-500">CNC spindle position relative to Extruder 1 (E1).</p>
+                  <div className="grid grid-cols-3 gap-3">
+                    <MField label="CNC X from E1 (mm)">
+                      <NumInput value={form.cncOffsetX} step={0.1} onChange={v => set('cncOffsetX', v)} />
+                    </MField>
+                    <MField label="CNC Y from E1 (mm)">
+                      <NumInput value={form.cncOffsetY} step={0.1} onChange={v => set('cncOffsetY', v)} />
+                    </MField>
+                    <MField label="CNC Z from E1 (mm)">
+                      <NumInput value={form.cncOffsetZ} step={0.1} onChange={v => set('cncOffsetZ', v)} />
+                    </MField>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Validation summary */}

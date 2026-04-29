@@ -4,6 +4,7 @@ using HybridSlicer.Application.Interfaces;
 using HybridSlicer.Application.Interfaces.Repositories;
 using HybridSlicer.Domain.Enums;
 using HybridSlicer.Domain.Exceptions;
+using HybridSlicer.Domain.ValueObjects;
 using MediatR;
 using Microsoft.Extensions.Logging;
 // UnmachinableRegion is defined in IToolpathPlanner.cs (HybridSlicer.Application.Interfaces)
@@ -19,6 +20,7 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
     private readonly IToolpathPlanner        _planner;
     private readonly ISafetyValidator        _safety;
     private readonly ICuraGCodeParser        _parser;
+    private readonly IMachineCoordinateTranslator _coordTranslator;
     private readonly ILogger<GenerateToolpathsHandler> _logger;
 
     public GenerateToolpathsHandler(
@@ -29,6 +31,7 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
         IToolpathPlanner planner,
         ISafetyValidator safety,
         ICuraGCodeParser parser,
+        IMachineCoordinateTranslator coordTranslator,
         ILogger<GenerateToolpathsHandler> logger)
     {
         _jobs          = jobs;
@@ -38,6 +41,7 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
         _planner       = planner;
         _safety        = safety;
         _parser        = parser;
+        _coordTranslator = coordTranslator;
         _logger        = logger;
     }
 
@@ -62,6 +66,11 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
 
         var profile = await _printProfiles.GetByIdAsync(job.PrintProfileId, ct)
             ?? throw new DomainException("PROFILE_NOT_FOUND", $"Print profile {job.PrintProfileId} not found.");
+
+        // CNC spindle offset: only use when machine is hybrid, otherwise zero
+        var cncOffset = machine.Type == MachineType.Hybrid
+            ? machine.CncOffset
+            : MachineOffset.Zero;
 
         // ── Depth-of-cut validation ───────────────────────────────────────────
         var axialDepthMm = cmd.MachineEveryNLayers * profile.LayerHeightMm;
@@ -358,7 +367,7 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                     NozzleDiameterMm:       profile.LineWidthMm,
                     FeedRateMmPerMin:       tool.RecommendedFeedMmPerMin,
                     SpindleRpm:             spindleRpm,
-                    MachineOffset:          machine.CncOffset,
+                    MachineOffset:          cncOffset,
                     SafeClearanceHeightMm:  machine.SafeClearanceHeightMm,
                     IsOuterWall:            true,
                     ClimbMilling:           true,
@@ -422,8 +431,8 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                 var printedBounds = new List<BoundingBox3D>();
                 {
                     var crcContraction = tool.RadiusMm + profile.LineWidthMm / 2.0 + 0.5; // CRC offset + 0.5 mm margin
-                    var offX = machine.CncOffset.X;
-                    var offY = machine.CncOffset.Y;
+                    var offX = cncOffset.X;
+                    var offY = cncOffset.Y;
                     foreach (var wallPath in layerData.OuterWallPaths)
                     {
                         if (wallPath.Count < 4) continue;
@@ -487,6 +496,10 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
             var jobDir          = Path.GetDirectoryName(job.StlFilePath)!;
             var toolpathGCodePath = Path.Combine(jobDir, "toolpath.gcode");
             await File.WriteAllTextAsync(toolpathGCodePath, gcodeBuilder.ToString(), ct);
+
+            // Translate CNC toolpath to machine coordinates (same translation as print G-code)
+            // so both files are in the same coordinate frame when merged into hybrid output.
+            await _coordTranslator.TranslateAsync(toolpathGCodePath, machine, ct);
 
             job.MarkToolpathsComplete(toolpathGCodePath);
             await _jobs.UpdateAsync(job, ct);

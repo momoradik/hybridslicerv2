@@ -42,6 +42,9 @@ public sealed class MachineProfilesController : ControllerBase
         if (req.BedPositionXMm.HasValue || req.BedPositionYMm.HasValue)
             profile.SetBedPosition(req.BedPositionXMm ?? 0, req.BedPositionYMm ?? 0);
 
+        if (req.OriginXMm.HasValue || req.OriginYMm.HasValue)
+            profile.SetOrigin(req.OriginXMm ?? 0, req.OriginYMm ?? 0);
+
         if (req.IpAddress is not null)
             profile.SetNetworkEndpoint(req.IpAddress, req.Port);
 
@@ -82,6 +85,11 @@ public sealed class MachineProfilesController : ControllerBase
             profile.SetBedPosition(
                 req.BedPositionXMm ?? profile.BedPositionXMm,
                 req.BedPositionYMm ?? profile.BedPositionYMm);
+
+        if (req.OriginXMm.HasValue || req.OriginYMm.HasValue)
+            profile.SetOrigin(
+                req.OriginXMm ?? profile.OriginXMm,
+                req.OriginYMm ?? profile.OriginYMm);
 
         if (req.BedWidthMm.HasValue || req.BedDepthMm.HasValue || req.BedHeightMm.HasValue)
             profile.UpdateBedDimensions(
@@ -168,6 +176,8 @@ public record CreateMachineProfileRequest(
     string? OriginMode = null,
     double? BedPositionXMm = null,
     double? BedPositionYMm = null,
+    double? OriginXMm = null,
+    double? OriginYMm = null,
     IReadOnlyList<double>? NozzleXOffsets = null,
     IReadOnlyList<double>? NozzleYOffsets = null,
     double LeftBedEdgeOffsetMm = 0,
@@ -190,6 +200,8 @@ public record UpdateMachineProfileRequest(
     string? OriginMode = null,
     double? BedPositionXMm = null,
     double? BedPositionYMm = null,
+    double? OriginXMm = null,
+    double? OriginYMm = null,
     IReadOnlyList<double>? NozzleXOffsets = null,
     IReadOnlyList<double>? NozzleYOffsets = null,
     double? LeftBedEdgeOffsetMm = null,

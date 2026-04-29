@@ -16,6 +16,7 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
     private readonly ISlicingEngine _slicer;
     private readonly IMultiExtruderPostProcessor _multiExtruder;
     private readonly ICustomGCodeBlockRepository _customGCode;
+    private readonly IMachineCoordinateTranslator _coordTranslator;
     private readonly ILogger<SlicePrintJobHandler> _logger;
 
     public SlicePrintJobHandler(
@@ -25,6 +26,7 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
         ISlicingEngine slicer,
         IMultiExtruderPostProcessor multiExtruder,
         ICustomGCodeBlockRepository customGCode,
+        IMachineCoordinateTranslator coordTranslator,
         ILogger<SlicePrintJobHandler> logger)
     {
         _jobs = jobs;
@@ -33,6 +35,7 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
         _slicer = slicer;
         _multiExtruder = multiExtruder;
         _customGCode = customGCode;
+        _coordTranslator = coordTranslator;
         _logger = logger;
     }
 
@@ -98,6 +101,10 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
             await _multiExtruder.ProcessAsync(result.GCodeFilePath, machine, enabledBlocks, ct);
 
             await InjectCustomGCodeAsync(result.GCodeFilePath, ct);
+
+            // Final step: translate from bed-centre coordinates to real machine coordinates
+            // using origin and bed position from the machine profile. No-op if origin = bed centre.
+            await _coordTranslator.TranslateAsync(result.GCodeFilePath, machine, ct);
 
             job.MarkSlicingComplete(result.GCodeFilePath, result.TotalLayers);
             await _jobs.UpdateAsync(job, ct);

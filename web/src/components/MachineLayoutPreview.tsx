@@ -12,6 +12,8 @@ interface Props {
   bedDepth: number
   bedPositionX: number
   bedPositionY: number
+  originX: number
+  originY: number
   extruderCount: number
   nozzleXOffsets: number[]
   nozzleYOffsets: number[]
@@ -20,23 +22,31 @@ interface Props {
   frontEdge: number
   backEdge: number
   extruderAssignments: ExtruderAssignment[]
+  isHybrid?: boolean
+  cncOffsetX?: number
+  cncOffsetY?: number
   highlight?: string | null
   // Callbacks for interactive editing
   onBedPositionChange?: (x: number, y: number) => void
   onBedSizeChange?: (w: number, d: number) => void
   onNozzleOffsetChange?: (index: number, dx: number, dy: number) => void
+  onExtruder1PositionChange?: (frontEdge: number, leftEdge: number) => void
+  onOriginChange?: (x: number, y: number) => void
 }
 
 export default function MachineLayoutPreview({
   travelX, travelY, originMode: _om, bedWidth, bedDepth, bedPositionX, bedPositionY,
+  originX, originY,
   extruderCount, nozzleXOffsets, nozzleYOffsets,
   leftEdge, rightEdge, frontEdge, backEdge: _be,
-  extruderAssignments, highlight,
+  extruderAssignments, isHybrid, cncOffsetX, cncOffsetY,
+  highlight,
   onBedPositionChange, onBedSizeChange, onNozzleOffsetChange,
+  onExtruder1PositionChange, onOriginChange,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null)
   const dragRef = useRef<{
-    type: 'bed' | 'bedRight' | 'bedBottom' | 'bedCorner' | `nozzle-${number}`
+    type: 'bed' | 'bedRight' | 'bedBottom' | 'bedCorner' | 'origin' | `nozzle-${number}`
     startMmX: number; startMmY: number
     startSvgX: number; startSvgY: number
   } | null>(null)
@@ -59,9 +69,13 @@ export default function MachineLayoutPreview({
   const bedSvgW = bedWidth * scale
   const bedSvgH = bedDepth * scale
 
-  // Origin
-  const originSvgX = bedSvgX + bedSvgW / 2
-  const originSvgY = bedSvgY + bedSvgH / 2
+  // Machine origin (explicit position in travel frame)
+  const originSvgX = offX + originX * scale
+  const originSvgY = offY + originY * scale
+
+  // Bed center (print reference)
+  const bedCenterSvgX = bedSvgX + bedSvgW / 2
+  const bedCenterSvgY = bedSvgY + bedSvgH / 2
 
   // Extruder positions
   const extPosXmm: number[] = [frontEdge]
@@ -129,13 +143,20 @@ export default function MachineLayoutPreview({
       const nw = Math.max(10, Math.min(travelX - bedPositionX, d.startMmX + dxMm))
       const nd = Math.max(10, Math.min(travelY - bedPositionY, d.startMmY + dyMm))
       onBedSizeChange(Math.round(nw * 10) / 10, Math.round(nd * 10) / 10)
+    } else if (d.type === 'origin' && onOriginChange) {
+      const nx = Math.max(0, Math.min(travelX, d.startMmX + dxMm))
+      const ny = Math.max(0, Math.min(travelY, d.startMmY + dyMm))
+      onOriginChange(Math.round(nx * 10) / 10, Math.round(ny * 10) / 10)
+    } else if (d.type === 'nozzle-0' && onExtruder1PositionChange) {
+      // E1 drag changes bed-edge offsets (front/left)
+      const newLeft = Math.max(0, d.startMmX + dxMm)
+      const newFront = Math.max(0, d.startMmY - dyMm) // SVG Y inverted
+      onExtruder1PositionChange(Math.round(newFront * 10) / 10, Math.round(newLeft * 10) / 10)
     } else if (d.type.startsWith('nozzle-') && onNozzleOffsetChange) {
       const idx = parseInt(d.type.split('-')[1])
-      // For E0: move changes bed-edge offsets conceptually, skip for now
-      // For E1+: adjust offset relative to previous nozzle
       if (idx > 0) {
-        const newY = d.startMmX + dxMm  // SVG horizontal = mm Y
-        const newX = d.startMmY - dyMm  // SVG vertical inverted = mm X
+        const newY = d.startMmX + dxMm
+        const newX = d.startMmY - dyMm
         onNozzleOffsetChange(idx - 1, Math.round(newX * 10) / 10, Math.round(newY * 10) / 10)
       }
     }
@@ -220,13 +241,15 @@ export default function MachineLayoutPreview({
             onPointerDown={e => onPointerDown(e, 'bedCorner', bedWidth, bedDepth)} />
         </>}
 
-        {/* ── Origin marker ── */}
-        <g opacity={opacity('origin')}>
-          <circle cx={originSvgX} cy={originSvgY} r="4" fill="none" stroke="#ef4444" strokeWidth="1.5" />
-          <line x1={originSvgX - 7} y1={originSvgY} x2={originSvgX + 7} y2={originSvgY} stroke="#ef4444" strokeWidth="1" />
-          <line x1={originSvgX} y1={originSvgY - 7} x2={originSvgX} y2={originSvgY + 7} stroke="#ef4444" strokeWidth="1" />
-          <text x={originSvgX + 10} y={originSvgY - 6} fill="#ef4444" fontSize="8"
-            fontFamily="ui-sans-serif,sans-serif">(0,0)</text>
+        {/* ── Machine origin (draggable) ── */}
+        <g opacity={opacity('origin')} style={{ cursor: onOriginChange ? 'move' : 'default' }}
+          onPointerDown={e => onPointerDown(e, 'origin', originX, originY)}>
+          <circle cx={originSvgX} cy={originSvgY} r="6" fill="#ef4444" fillOpacity="0.15"
+            stroke="#ef4444" strokeWidth="1.5" />
+          <line x1={originSvgX - 8} y1={originSvgY} x2={originSvgX + 8} y2={originSvgY} stroke="#ef4444" strokeWidth="1" />
+          <line x1={originSvgX} y1={originSvgY - 8} x2={originSvgX} y2={originSvgY + 8} stroke="#ef4444" strokeWidth="1" />
+          <text x={originSvgX + 11} y={originSvgY - 6} fill="#ef4444" fontSize="8"
+            fontFamily="ui-sans-serif,sans-serif">(0,0) origin</text>
         </g>
 
         {/* ── Axis arrows ── */}
@@ -249,8 +272,10 @@ export default function MachineLayoutPreview({
           </marker>
         </defs>
 
-        {/* ── Bed center ── */}
-        <circle cx={originSvgX} cy={originSvgY} r="2" fill="#6b7280" />
+        {/* ── Bed center (print reference) ── */}
+        <circle cx={bedCenterSvgX} cy={bedCenterSvgY} r="3" fill="none" stroke="#6b7280" strokeWidth="1" strokeDasharray="2,2" />
+        <text x={bedCenterSvgX + 6} y={bedCenterSvgY - 4} fill="#6b7280" fontSize="7"
+          fontFamily="ui-sans-serif,sans-serif">print ref</text>
 
         {/* ── Bed edge dimensions ── */}
         {leftEdge > 0 && extSvg.length > 0 && (
@@ -300,11 +325,16 @@ export default function MachineLayoutPreview({
         })}
 
         {/* ── Extruder markers (draggable for E1+) ── */}
-        {extSvg.map((pos, i) => (
+        {extSvg.map((pos, i) => {
+          const canDrag = (i === 0 && onExtruder1PositionChange) || (i > 0 && onNozzleOffsetChange)
+          return (
           <g key={i} opacity={nozzleOpacity(i)}
-            style={{ cursor: i > 0 && onNozzleOffsetChange ? 'grab' : 'default' }}
-            onPointerDown={i > 0 ? e => onPointerDown(e, `nozzle-${i}`, nozzleYOffsets[i-1] ?? 0, nozzleXOffsets[i-1] ?? 0) : undefined}>
-            <circle cx={pos.x} cy={pos.y} r={i > 0 && onNozzleOffsetChange ? 10 : 7}
+            style={{ cursor: canDrag ? 'grab' : 'default' }}
+            onPointerDown={canDrag ? e => {
+              if (i === 0) onPointerDown(e, 'nozzle-0', leftEdge, frontEdge)
+              else onPointerDown(e, `nozzle-${i}`, nozzleYOffsets[i-1] ?? 0, nozzleXOffsets[i-1] ?? 0)
+            } : undefined}>
+            <circle cx={pos.x} cy={pos.y} r={canDrag ? 10 : 7}
               fill={NOZZLE_COLORS[i % NOZZLE_COLORS.length]} fillOpacity="0.15"
               stroke={NOZZLE_COLORS[i % NOZZLE_COLORS.length]} strokeWidth="1.5" />
             <circle cx={pos.x} cy={pos.y} r="2.5"
@@ -316,7 +346,38 @@ export default function MachineLayoutPreview({
               fill={NOZZLE_COLORS[i % NOZZLE_COLORS.length]} fontSize="7" fontWeight="500"
               fontFamily="ui-sans-serif,sans-serif">{getDuty(i)}</text>
           </g>
-        ))}
+          )
+        })}
+
+        {/* ── CNC spindle (hybrid only, relative to E1) ── */}
+        {isHybrid && extSvg.length > 0 && (() => {
+          const e1 = extSvg[0]
+          const cncX = cncOffsetY ?? 0 // CNC Y offset → SVG horizontal (same mapping as nozzles)
+          const cncXmm = cncOffsetX ?? 0 // CNC X offset → SVG vertical (inverted)
+          const cncSvgX = e1.x + cncX * (bedSvgW / (bedWidth || 1))
+          const cncSvgY = e1.y - cncXmm * (bedSvgH / (bedDepth || 1))
+          return (
+            <g>
+              {/* Dashed line from E1 to CNC */}
+              <line x1={e1.x} y1={e1.y} x2={cncSvgX} y2={cncSvgY}
+                stroke="#d946ef" strokeWidth="1" strokeDasharray="4,3" opacity="0.5" />
+              {/* CNC spindle marker — diamond shape */}
+              <rect x={cncSvgX - 7} y={cncSvgY - 7} width={14} height={14} rx="2"
+                fill="#d946ef" fillOpacity="0.15" stroke="#d946ef" strokeWidth="1.5"
+                transform={`rotate(45,${cncSvgX},${cncSvgY})`} />
+              <circle cx={cncSvgX} cy={cncSvgY} r="2" fill="#d946ef" />
+              <text x={cncSvgX} y={cncSvgY - 14} textAnchor="middle"
+                fill="#d946ef" fontSize="8" fontWeight="600"
+                fontFamily="ui-sans-serif,sans-serif">CNC</text>
+              {/* Offset label */}
+              <text x={(e1.x + cncSvgX) / 2} y={Math.min(e1.y, cncSvgY) - 4} textAnchor="middle"
+                fill="#d946ef" fontSize="7" opacity="0.7"
+                fontFamily="ui-sans-serif,sans-serif">
+                X{cncOffsetX ?? 0} Y{cncOffsetY ?? 0}
+              </text>
+            </g>
+          )
+        })()}
       </svg>
 
       {/* ── Legend ── */}
@@ -333,6 +394,12 @@ export default function MachineLayoutPreview({
           <span className="inline-block w-2.5 h-2.5 rounded-full border-2 border-red-500" />
           <span className="text-red-400">(0,0)</span>
         </span>
+        {isHybrid && (
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-2.5 h-2.5 rotate-45 border-2 border-fuchsia-500" style={{ borderRadius: 2 }} />
+            <span className="text-fuchsia-400">CNC spindle</span>
+          </span>
+        )}
         {extruderCount > 0 && Array.from({ length: extruderCount }, (_, i) => (
           <span key={i} className="flex items-center gap-1">
             <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: NOZZLE_COLORS[i % NOZZLE_COLORS.length] }} />

@@ -24,9 +24,13 @@ public class MachineProfile
     public double BedHeightMm { get; private set; }
 
     // Bed position inside machine travel (mm) — front-left corner of bed in machine coords.
-    // Default = centred: (TravelX - BedWidth) / 2
     public double BedPositionXMm { get; private set; }
     public double BedPositionYMm { get; private set; }
+
+    // Machine origin (0,0) position inside the travel frame (mm).
+    // Default = (0, 0) = machine zero at front-left of travel.
+    public double OriginXMm { get; private set; }
+    public double OriginYMm { get; private set; }
 
     // FDM properties
     public int ExtruderCount { get; private set; }
@@ -232,6 +236,13 @@ public class MachineProfile
     {
         BedPositionXMm = x;
         BedPositionYMm = y;
+        Touch();
+    }
+
+    public void SetOrigin(double x, double y)
+    {
+        OriginXMm = x;
+        OriginYMm = y;
         Touch();
     }
 
